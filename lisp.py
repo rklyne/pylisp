@@ -19,6 +19,7 @@ class LookupError(LispError): pass
 
 # s-expression type
 class SExpr(tuple): pass
+class Sequence(tuple): pass
 
 class Symbol(str): pass
 
@@ -35,9 +36,11 @@ class LispFunc(object):
         self.def_env = env
     def __call__(self, *args):
         # TODO: Implement this so that Lisp code is Python callable.
-        pass
-env_stack = []
+        # (Python code is Lisp callable, so this is also required to make Lisp
+        # functions Lisp callable ;))
+        raise NotImplementedError
 
+env_stack = []
 def lisp_apply(f, args, env):
     assert callable(f), f
     try:
@@ -48,12 +51,12 @@ def lisp_apply(f, args, env):
         assert env_stack.pop() is env
 
 def build_basic_env():
-
+    _no_value = object()
 # Maths functions
-    def plus(*args):
-        return sum(args)
-    def times(*args):
-        result = 1
+    def plus(arg0, *args):
+        return arg0 + sum(args)
+    def times(arg0, *args):
+        result = arg0
         for arg in args:
             result *= arg
         return result
@@ -62,19 +65,37 @@ def build_basic_env():
     def divide(l, r):
         return l / r
 
+# String functions
+    def string(arg0, *args):
+        res = str(arg0)
+        for arg in args:
+            res += str(arg)
+        return res
 # IO functions
     def print_func(*args):
         for arg in args:
             print arg,
         print
 
+# System functions
+    def assert_func(self, truth, message=_no_value):
+        if message is _no_value:
+            assert truth
+        else:
+            assert truth, message
+
 # The environment, with Lisp names.
     env = LispEnv(**{
+        't': True,
+        'f': False,
         '+': plus,
         '-': minus,
         '*': times,
         '/': divide,
         'print': print_func,
+        'str': string,
+        'assert': assert_func,
+        'apply': apply,
     })
 
     return env
@@ -91,13 +112,15 @@ def resolve_def(var, env):
 
 class Reader(object):
     _prompt = 'Lisp --> '
-    _nl_expr = re.compile(r"[\\\n\\\r]")
-    _ws_expr = re.compile(r"[\\\t\\\n\\\r, ]")
+    _nl_expr = re.compile(r"[\n\r]")
+    _ws_expr = re.compile(r"[\t\n\r, ]")
     _ws_char = ' '
+    _debug = True
 
     def __init__(self, input_func=raw_input):
         self._raw_input = input_func
         self._buffer = ''
+        self._last_form = None
 
     def _input(self):
         data = ''
@@ -105,27 +128,43 @@ class Reader(object):
             data = self._raw_input(self._prompt)
         return data + "\n" # This nl gets stripped by python :-(
     def _read(self):
-        data = str(self._input())
+        try:
+            data = str(self._input())
+        except EOFError:
+            return ""
         # Replace all whitespace chars with the one true ws-char.
 #        data = self._ws_expr.sub(self._ws_char, data)
         self._buffer += data
 
+    def _ensure_data(self, error=False):
+        if not self._buffer:
+            if self._read() == "":
+                if error:
+                    raise EOFError
+
+    def _buffer_drop(self, count=1):
+        if self._debug and self._last_form is not None:
+            self._last_form += self._buffer[:count]
+        self._buffer = self._buffer[count:]
     def _drop_until(self, expr, matches=True):
-        while (expr.match(self.peek_char()) is not None) == matches:
-            self._buffer = self._buffer[1:]
+        # TODO: This could be much more efficient.
+        while self.peek_char() and (expr.match(self.peek_char()) is not None) == matches:
+            self._buffer_drop()
     def _drop_ws(self):
         self._drop_until(self._ws_expr)
     def _drop_until_newline(self):
         self._drop_until(self._nl_expr, False)
 
     def get_char(self):
-        c = self.peek_char()
-        c, self._buffer = self._buffer[0], self._buffer[1:]
+        self._ensure_data(error=True)
+        c = self._buffer[0]
+        self._buffer_drop()
         return c
 
     def peek_char(self):
+        self._ensure_data()
         if not self._buffer:
-            self._read()
+            return ""
         return self._buffer[0]
 
     def get_non_ws_char(self):
@@ -137,34 +176,64 @@ class Reader(object):
         symbol_start_chars='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_+-/*!?$^~#',
         symbol_chars=''
     ):
+        """Reads a form and returns one full s-expression. An s-expression may be:
+        0. A reader macro: These start with "#"
+        1. A Symbol
+        2. A number, int or float.
+        3. A string
+        4. A comment
+        5. A sequence
+        6. A parenthesised whitespace separated list of s-expressions
+        """
+        self._last_form = ''
         c = self.get_non_ws_char() # First char.
-        if c == ';':
-            self._drop_until_newline()
-            return None
-        if c == '(':
-            self._drop_ws()
-            s_expr = []
-            while self.peek_char() != ')':
-                s_expr.append(self.get_expr())
-                self._drop_ws()
-            # consume the ')'
-            self.get_char()
-            return SExpr(s_expr)
-        if c in digits:
-            n = c
-            # TODO: Add float support
-            while self.peek_char() in digits:
-                n += self.get_char()
-            return int(n)
+
+        # 0. Reader macros
+        if c == '#':
+            raise ReaderError, "No such macro"
+        # 1. A Symbol
         if c in symbol_start_chars:
             sym = c
             c = self.peek_char()
-            while c in symbol_chars or c in symbol_start_chars:
+            while c and (c in symbol_chars or c in symbol_start_chars):
                 sym += c
                 self.get_char()
                 c = self.peek_char()
             return Symbol(sym)
-        raise ReaderError("Unexpected symbol", c, self._buffer)
+        # 2. A number
+        if c in digits:
+            n = c
+            # TODO: Add float support
+            while self.peek_char() and self.peek_char() in digits:
+                n += self.get_char()
+            return int(n)
+        # 3. A string
+        if c == '"':
+            raise NotImplementedError("TODO: There is currently no string literal support")
+        # 4. Comment
+        if c == ';':
+            self._drop_until_newline()
+            return None
+        nested_expr_params = None
+        # 5. A sequence
+        if c == '[':
+            nested_expr_params = ']', Sequence
+        # 6. Parenthesised list of s-expressions
+        if c == '(':
+            nested_expr_params = ')', SExpr
+        # The real work for 5. and 6.
+        if nested_expr_params:
+            closing_char, expr_class = nested_expr_params
+            self._drop_ws()
+            s_expr = []
+            while self.peek_char() and self.peek_char() != closing_char:
+                s_expr.append(self.get_expr())
+                self._drop_ws()
+            # consume the closing char
+            self.get_char()
+            return expr_class(s_expr)
+        # Something unexpected
+        raise ReaderError("Unexpected form", c, self._last_form, self._buffer)
 
 class FileReader(Reader):
     _CHUNK = 256
@@ -183,14 +252,42 @@ class FileReader(Reader):
                     yield expr
         except EOFError:
             pass
-# The evaluator
 
+class StringReader(Reader):
+    _CHUNK = 256
+    def __init__(self, text=""):
+        self._text = text
+        super(StringReader, self).__init__()
+    def _input(self):
+        ret = self._text
+        if ret == "":
+            raise EOFError
+        self._text = ""
+        return ret
+
+    def clear_input(self):
+        self._text = ""
+
+    def provide_input(self, text):
+        self._text += text
+
+    def get_remaining_input(self):
+        return self._text
+
+
+# The Evaluator (the main bit)
 def lisp_eval(expr, env=basic_env):
+    """PyLisp Evaluator.
+    Reserved words:
+    * def
+    * progn
+    * nil
+    """
     type_e = type(expr)
     if type_e is Symbol:
+        # 'nil' can't be overridden.
+        # For contrast 't' and 'f' (True and False) can be.
         if   expr == 'nil': return None
-        elif expr == 't': return True
-        elif expr == 'f': return False
         else: return resolve_def(expr, env)
     elif type_e is int: return expr
     elif type_e is float: return expr
@@ -201,7 +298,7 @@ def lisp_eval(expr, env=basic_env):
         type_f = type(f)
         if type_f is Symbol:
             if f == 'def':
-                assert len(r) == 2
+                assert len(r) == 2, r
                 name = r[0]
                 assert type(name) is Symbol, name
                 expr = r[1]
@@ -213,8 +310,12 @@ def lisp_eval(expr, env=basic_env):
                     ret = lisp_eval(r[0])
                     r = r[1:]
                 return ret
-            # TODO: implement progn, eval a sequence
-            # TODO: implement fn[], define a function
+            elif f == 'quote':
+                raise NotImplementedError("TODO: Implement quote")
+            elif f == 'fn':
+                assert len(r) >= 2, r
+                # A new LispFunc, with bindings and an expression body
+                return LispFunc(r[0], r[1:])
 
             func = resolve_def(f, env)
             return lisp_apply(func, map(lisp_eval, r), env)
