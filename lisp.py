@@ -216,6 +216,11 @@ class Reader(object):
             # TODO: Add float support
             while self.peek_char() and self.peek_char() in digits:
                 n += self.get_char()
+            if self.peek_char() == '.':
+                n += self.get_char()
+                while self.peek_char() and self.peek_char() in digits:
+                    n += self.get_char()
+                return float(n)
             return int(n)
         # 3. A string
         if c == '"':
