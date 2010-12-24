@@ -142,6 +142,16 @@ class Reader(object):
                 if error:
                     raise EOFError
 
+    def _read_until(self, str_or_expr, matches=True):
+        if isinstance(str_or_expr, str):
+            expr = re.compile(str_or_expr)
+        else:
+            expr = str_or_expr
+        # TODO: This could be much more efficient.
+        data = ''
+        while self.peek_char() and (expr.match(self.peek_char()) is not None) != matches:
+            data += self.get_char()
+        return data
     def _buffer_drop(self, count=1):
         if self._debug and self._last_form is not None:
             self._last_form += self._buffer[:count]
@@ -209,7 +219,20 @@ class Reader(object):
             return int(n)
         # 3. A string
         if c == '"':
-            raise NotImplementedError("TODO: There is currently no string literal support")
+            s = self._read_until('"')
+            if s:
+                while s[-1] == "\\":
+                    s += self.get_char()
+                    s += self._read_until('"')
+            # Consume the ending quote
+            self.get_char()
+            # Unescape
+            s = s.replace('\\n', '\n')
+            s = s.replace('\\t', '\t')
+            s = s.replace('\\r', '\r')
+            s = s.replace('\\"', '"')
+            s = s.replace('\\\\', '\\')
+            return s
         # 4. Comment
         if c == ';':
             self._drop_until_newline()

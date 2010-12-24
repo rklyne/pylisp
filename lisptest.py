@@ -42,6 +42,11 @@ class ReaderTest(LispTest):
         self.assert_(isinstance(expr, str))
         self.assertEqual(expr, "abc")
 
+    def test_string_escaping(self):
+        expr = self.get_expr('"abc\\"abc"')
+        self.assert_(isinstance(expr, str))
+        self.assertEqual(expr, 'abc"abc')
+
     # 4. A comment
     def test_comment(self):
         self.assertExpr("; comment", None)
