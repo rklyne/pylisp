@@ -21,7 +21,9 @@ class LookupError(LispError): pass
 class SExpr(tuple): pass
 class Sequence(tuple): pass
 
-class Symbol(str): pass
+class Symbol(str):
+    def __str__(self):
+        return "<Symbol: %s>" % super(Symbol, self).__str__()
 
 # enivronment
 class LispEnv(dict):
@@ -52,12 +54,13 @@ class LispFunc(object):
         assert isinstance(env, LispEnv)
         self.def_env = env
     def __call__(self, *args):
-        # TODO: Implement this so that Lisp code is Python callable.
+        # Implemented this so that Lisp code is Python callable.
         # (Python code is Lisp callable, so this is also required to make Lisp
         # functions Lisp callable ;))
         ret = None
         local_env = {}
         for name in self.bindings:
+            assert isinstance(name, Symbol), name
             local_env[name] = args[0]
             args = args[1:]
         env = LispEnv(local_env, parent=self.def_env)
@@ -358,12 +361,12 @@ def lisp_eval(expr, env=basic_env):
             name = r[0]
             assert type(name) is Symbol, name
             expr = r[1]
-            env[name] = lisp_eval(expr)
+            env[name] = lisp_eval(expr, env)
             return None
         elif f == 'progn':
             ret = None
             while r:
-                ret = lisp_eval(r[0])
+                ret = lisp_eval(r[0], env)
                 r = r[1:]
             return ret
         elif f == 'quote':
@@ -373,9 +376,9 @@ def lisp_eval(expr, env=basic_env):
             assert len(r) >= 2, r
             # A new LispFunc, with bindings and an expression body
             return LispFunc(r[0], r[1:], env)
-
-        func = lisp_eval(f, env)
-        return lisp_apply(func, map(lisp_eval, r), env)
+        else:
+            func = lisp_eval(f, env)
+            return lisp_apply(func, map(lambda x: lisp_eval(x, env), r), env)
     else:
         raise LispRuntimeError("Cannot evaluate this expression.", expr)
 
