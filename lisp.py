@@ -30,11 +30,17 @@ class LispEnv(dict):
         if parent is not None:
             assert isinstance(parent, LispEnv)
         self.parent = parent
-    def __getitem__(self, key):
-        if not self.has_key(key):
+    def __getitem__(self, key, *t, **k):
+        if not self._has_key(key):
             if self.parent:
-                self.parent[key]
-        return super(LispEnv, self).__getitem__(key)
+                return self.parent[key]
+        return super(LispEnv, self).__getitem__(key, *t, **k)
+    def _has_key(self, key):
+        return super(LispEnv, self).has_key(key)
+    def has_key(self):
+        if self._has_key(key):
+            return True
+        return self.parent.has_key(key)
 
 class LispFunc(object):
     """In general, a Python function is a PyLisp function, and a PyLisp function
@@ -43,6 +49,7 @@ class LispFunc(object):
     def __init__(self, bindings, expr, env):
         self.expr = expr
         self.bindings = bindings
+        assert isinstance(env, LispEnv)
         self.def_env = env
     def __call__(self, *args):
         # TODO: Implement this so that Lisp code is Python callable.
@@ -50,6 +57,9 @@ class LispFunc(object):
         # functions Lisp callable ;))
         ret = None
         local_env = {}
+        for name in self.bindings:
+            local_env[name] = args[0]
+            args = args[1:]
         env = LispEnv(local_env, parent=self.def_env)
         for e in self.expr:
             ret = lisp_eval(e, env)
@@ -118,14 +128,18 @@ def build_basic_env():
 basic_env = build_basic_env()
 
 def resolve_def(var, env):
-    if not env.has_key(var):
+    try:
+        return env[var]
+    except KeyError:
         raise LookupError(var)
-    return env[var]
 
 
 # The Reader
 
 class Reader(object):
+    """The default Reader implementation. Reads input with Python's `raw_input`
+    method.
+    """
     _prompt = 'Lisp --> '
     _nl_expr = re.compile(r"[\n\r]")
     _ws_expr = re.compile(r"[\t\n\r, ]")
@@ -228,9 +242,9 @@ class Reader(object):
         # 2. A number
         if c in digits:
             n = c
-            # TODO: Add float support
             while self.peek_char() and self.peek_char() in digits:
                 n += self.get_char()
+            # Detect floating point numbers:
             if self.peek_char() == '.':
                 n += self.get_char()
                 while self.peek_char() and self.peek_char() in digits:

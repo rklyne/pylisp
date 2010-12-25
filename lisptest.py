@@ -82,10 +82,19 @@ class EvalTests(LispTest):
     def test_addition(self):
         self.assertEval("(+ 3 4)", 7)
 
+class EnvTest(LispTest):
+    def test_lookup(self):
+        env = lisp.LispEnv({})
+        env['a'] = 1
+        self.assertEqual(env['a'], 1)
+
+    def test_parent_lookup(self):
+        env = lisp.LispEnv({})
+        env['a'] = 1
+        env2 = lisp.LispEnv({'a': 2}, parent=env)
+        self.assertEqual(env2['a'], 2)
+
+
 if __name__ == '__main__':
     unittest.main()
-
-
-
-
 
