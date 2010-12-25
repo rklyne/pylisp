@@ -24,13 +24,23 @@ class Sequence(tuple): pass
 class Symbol(str): pass
 
 # enivronment
-class LispEnv(dict): pass
+class LispEnv(dict):
+    def __init__(self, mapping, parent=None):
+        super(LispEnv, self).__init__(mapping)
+        if parent is not None:
+            assert isinstance(parent, LispEnv)
+        self.parent = parent
+    def __getitem__(self, key):
+        if not self.has_key(key):
+            if self.parent:
+                self.parent[key]
+        return super(LispEnv, self).__getitem__(key)
 
 class LispFunc(object):
     """In general, a Python function is a PyLisp function, and a PyLisp function
     needs this wrapper to make it
     """
-    def __init__(self, expr, bindings, env):
+    def __init__(self, bindings, expr, env):
         self.expr = expr
         self.bindings = bindings
         self.def_env = env
@@ -38,7 +48,12 @@ class LispFunc(object):
         # TODO: Implement this so that Lisp code is Python callable.
         # (Python code is Lisp callable, so this is also required to make Lisp
         # functions Lisp callable ;))
-        raise NotImplementedError
+        ret = None
+        local_env = {}
+        env = LispEnv(local_env, parent=self.def_env)
+        for e in self.expr:
+            ret = lisp_eval(e, env)
+        return ret
 
 env_stack = []
 def lisp_apply(f, args, env):
@@ -85,7 +100,7 @@ def build_basic_env():
             assert truth, message
 
 # The environment, with Lisp names.
-    env = LispEnv(**{
+    env = LispEnv({
         't': True,
         'f': False,
         '+': plus,
@@ -324,31 +339,29 @@ def lisp_eval(expr, env=basic_env):
             return None
         f, r = expr[0], expr[1:]
         type_f = type(f)
-        if type_f is Symbol:
-            if f == 'def':
-                assert len(r) == 2, r
-                name = r[0]
-                assert type(name) is Symbol, name
-                expr = r[1]
-                env[name] = lisp_eval(expr)
-                return None
-            elif f == 'progn':
-                ret = None
-                while r:
-                    ret = lisp_eval(r[0])
-                    r = r[1:]
-                return ret
-            elif f == 'quote':
-                raise NotImplementedError("TODO: Implement quote")
-            elif f == 'fn':
-                assert len(r) >= 2, r
-                # A new LispFunc, with bindings and an expression body
-                return LispFunc(r[0], r[1:])
+        if f == 'def':
+            assert len(r) == 2, r
+            name = r[0]
+            assert type(name) is Symbol, name
+            expr = r[1]
+            env[name] = lisp_eval(expr)
+            return None
+        elif f == 'progn':
+            ret = None
+            while r:
+                ret = lisp_eval(r[0])
+                r = r[1:]
+            return ret
+        elif f == 'quote':
+            assert len(r) == 1, expr
+            return r
+        elif f == 'fn':
+            assert len(r) >= 2, r
+            # A new LispFunc, with bindings and an expression body
+            return LispFunc(r[0], r[1:], env)
 
-            func = resolve_def(f, env)
-            return lisp_apply(func, map(lisp_eval, r), env)
-        else:
-            raise ExpressionEvalError("expression must start with a symbol")
+        func = lisp_eval(f, env)
+        return lisp_apply(func, map(lisp_eval, r), env)
     else:
         raise LispRuntimeError("Cannot evaluate this expression.", expr)
 
@@ -433,3 +446,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
