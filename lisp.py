@@ -45,28 +45,41 @@ class LispEnv(dict):
         return self.parent.has_key(key)
 
 class LispFunc(object):
+    extra_bindings = None
     """In general, a Python function is a PyLisp function, and a PyLisp function
     needs this wrapper to make it
     """
-    def __init__(self, bindings, expr, env):
-        self.expr = expr
-        self.bindings = bindings
+    def __init__(self, bindings, exprs, env):
         assert isinstance(env, LispEnv)
+        self.exprs = exprs
+        exact_bindings = bindings
+        assert isinstance(bindings, Sequence)
+        if bindings[-1][0] == '&':
+            self.extra_bindings = Symbol(bindings[-1][1:])
+            exact_bindings = bindings[:-1]
+        self.bindings = exact_bindings
         self.def_env = env
-    def __call__(self, *args):
+    def __call__(self, *args_in, **kwargs_in):
         # Implemented this so that Lisp code is Python callable.
         # (Python code is Lisp callable, so this is also required to make Lisp
         # functions Lisp callable ;))
         ret = None
         local_env = {}
+        args = args_in
         for name in self.bindings:
-            assert isinstance(name, Symbol), name
+            assert isinstance(name, Symbol), (name, self.bindings)
             local_env[name] = args[0]
             args = args[1:]
+        if self.extra_bindings:
+            local_env[self.extra_bindings] = args
+        elif args or kwargs_in:
+            raise LispError("Too many params to function", self, args_in)
         env = LispEnv(local_env, parent=self.def_env)
-        for e in self.expr:
-            ret = lisp_eval(e, env)
+        for expr in self.exprs:
+            ret = lisp_eval(expr, env)
         return ret
+
+class LispMacro(LispFunc): pass
 
 env_stack = []
 def lisp_apply(f, args, env):
@@ -96,9 +109,20 @@ def build_basic_env():
 # String functions
     def string(arg0, *args):
         res = str(arg0)
-        for arg in args:
-            res += str(arg)
+        for arg in args:            res += str(arg)
         return res
+
+# Sequence functions
+    def seq(*args):
+        return SExpr(args)
+    def head(seq):
+        return seq[0]
+    def tail(seq):
+        return seq[1:]
+
+    def cons(el, seq):
+        return Sequence((el,)) + seq
+
 # IO functions
     def print_func(*args):
         for arg in args:
@@ -115,7 +139,6 @@ def build_basic_env():
 # The environment, with Lisp names.
     env = LispEnv({
         't': True,
-        'f': False,
         '+': plus,
         '-': minus,
         '*': times,
@@ -124,11 +147,20 @@ def build_basic_env():
         'str': string,
         'assert': assert_func,
         'apply': apply,
+        'list': seq,
+        'seq': seq,
+        'head': head,
+        'tail': tail,
+        'cons': cons,
     })
 
     return env
 
-basic_env = build_basic_env()
+basic_env = None
+def reset():
+    global basic_env
+    basic_env = build_basic_env()
+reset()
 
 def resolve_def(var, env):
     try:
@@ -146,7 +178,6 @@ class Reader(object):
     _prompt = 'Lisp --> '
     _nl_expr = re.compile(r"[\n\r]")
     _ws_expr = re.compile(r"[\t\n\r, ]")
-    _ws_char = ' '
     _debug = True
 
     def __init__(self, input_func=raw_input):
@@ -164,8 +195,6 @@ class Reader(object):
             data = str(self._input())
         except EOFError:
             return ""
-        # Replace all whitespace chars with the one true ws-char.
-#        data = self._ws_expr.sub(self._ws_char, data)
         self._buffer += data
 
     def _ensure_data(self, error=False):
@@ -215,7 +244,7 @@ class Reader(object):
 
     def get_expr(self,
         digits='0123456789',
-        symbol_start_chars='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_+-/*!?$^~#',
+        symbol_start_chars='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_+-/*!?$&^~#',
         symbol_chars=''
     ):
         """Reads a form and returns one full s-expression. An s-expression may be:
@@ -231,6 +260,11 @@ class Reader(object):
         c = self.get_non_ws_char() # First char.
 
         # 0. Reader macros
+        # 0.1 '-quoting.
+        if c == "'":
+            quoted_expr = self.get_expr()
+            return SExpr((Symbol('quote'), quoted_expr))
+        # 0.2 #-macros
         if c == '#':
             raise ReaderError, "No such macro"
         # 1. A Symbol
@@ -342,12 +376,14 @@ def lisp_eval(expr, env=basic_env):
     * def
     * progn
     * nil
+    * t
+    * if
     """
     type_e = type(expr)
     if type_e is Symbol:
-        # 'nil' can't be overridden.
-        # For contrast 't' and 'f' (True and False) can be.
+        # 'nil' and 't' can't be overridden.
         if   expr == 'nil': return None
+        elif expr == 't': return True
         else: return resolve_def(expr, env)
     elif type_e is int: return expr
     elif type_e is float: return expr
@@ -361,8 +397,19 @@ def lisp_eval(expr, env=basic_env):
             name = r[0]
             assert type(name) is Symbol, name
             expr = r[1]
-            env[name] = lisp_eval(expr, env)
-            return None
+            value = lisp_eval(expr, env)
+            env[name] = value
+            return value
+        elif f == 'defmacro':
+            assert len(r) >= 3, r
+            name = r[0]
+            # A new LispMacro, with bindings and an expression body
+            bindings = r[1]
+            exprs = r[2:]
+            value = LispMacro(bindings, exprs, env)
+            env[name] = value
+            value.name = name
+            return value
         elif f == 'progn':
             ret = None
             while r:
@@ -371,14 +418,31 @@ def lisp_eval(expr, env=basic_env):
             return ret
         elif f == 'quote':
             assert len(r) == 1, expr
-            return r
+            return r[0]
         elif f == 'fn':
             assert len(r) >= 2, r
             # A new LispFunc, with bindings and an expression body
             return LispFunc(r[0], r[1:], env)
+        elif f == 'if':
+            else_body = None
+            if len(r) == 3:
+                else_body = r[2]
+            test = r[0]
+            body = r[1]
+            if lisp_eval(test):
+                return lisp_eval(body)
+            elif else_body is not None:
+                return list_eval(else_body)
         else:
             func = lisp_eval(f, env)
-            return lisp_apply(func, map(lambda x: lisp_eval(x, env), r), env)
+            args = r
+            macro = isinstance(func, LispMacro)
+            if not macro:
+                args = map(lambda x: lisp_eval(x, env), args)
+            ret = lisp_apply(func, args, env)
+            if macro:
+                return lisp_eval(ret)
+            return ret
     else:
         raise LispRuntimeError("Cannot evaluate this expression.", expr)
 

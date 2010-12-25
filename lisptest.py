@@ -7,6 +7,7 @@ class LispTest(unittest.TestCase):
 
     def tearDown(self):
         self.assertEqual(self.reader.get_remaining_input(), "")
+        lisp.reset()
 
     def get_expr(self, text):
         self.reader.provide_input(text)
@@ -14,13 +15,16 @@ class LispTest(unittest.TestCase):
         self.assertEqual(self.reader.get_remaining_input(), "")
         return expr
 
+    def get_eval(self, text):
+        reader_expr = self.get_expr(text)
+        return lisp.lisp_eval(reader_expr)
+
     def assertExpr(self, text, expr_tuple):
         reader_expr = self.get_expr(text)
         self.assertEqual(reader_expr, expr_tuple)
 
     def assertEval(self, text, expr_tuple):
-        reader_expr = self.get_expr(text)
-        result_expr = lisp.lisp_eval(reader_expr)
+        result_expr = self.get_eval(text)
         self.assertEqual(result_expr, expr_tuple)
 
 class ReaderTest(LispTest):
@@ -78,9 +82,32 @@ class ReaderTest(LispTest):
             self.fail("Expected a lisp.ReaderError")
 
 class EvalTests(LispTest):
-
     def test_addition(self):
         self.assertEval("(+ 3 4)", 7)
+
+    def test_quote(self):
+        self.assertEval("(quote a)", "a")
+        self.assertEval("'a", "a")
+
+    def test_truth(self):
+        self.assertEval("t", True)
+
+    def test_def(self):
+        self.assertEval("(def a 3)", 3)
+
+    def test_defn(self):
+        """Test defining and calling functions"""
+        expr = self.get_eval("(def f (fn [x] (+ x 1)))")
+        self.assertEval("(f 2)", 3)
+
+    def test_defmacro(self):
+        """Test defining macros"""
+        code = """
+        (defmacro when [test &body]
+          (seq 'if test (cons 'progn body)))"""
+        self.get_eval(code)
+        self.assertEval("(when t 2)", 2)
+        self.assertEval("(when nil 2)", None)
 
 class EnvTest(LispTest):
     def test_lookup(self):
