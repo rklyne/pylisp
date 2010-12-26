@@ -2,4 +2,9 @@
 (defmacro when [test, &body]
   (seq 'if test (cons 'progn body)))
 
+(defmacro defn [name bindings &body]
+  (seq 'def name
+    (cons 'fn (cons bindings body))))
+
+
 
