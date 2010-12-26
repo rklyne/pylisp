@@ -3,27 +3,33 @@ import lisp
 
 class LispTest(unittest.TestCase):
     def setUp(self):
+        "Prepare a StringReader to read in s-expressions during tests."
         self.reader = lisp.StringReader()
 
     def tearDown(self):
+        "Check that there is no unconsumed input, then reset the environment."
         self.assertEqual(self.reader.get_remaining_input(), "")
         lisp.reset()
 
     def get_expr(self, text):
+        "Use the reader to convert text to an s-expression"
         self.reader.provide_input(text)
         expr = self.reader.get_expr()
         self.assertEqual(self.reader.get_remaining_input(), "")
         return expr
 
     def get_eval(self, text):
+        "Pass the textual expression through the reader, then evaluate it."
         reader_expr = self.get_expr(text)
         return lisp.lisp_eval(reader_expr)
 
     def assertExpr(self, text, expr_tuple):
+        "Assert that some text is parsed as a particular s-expression."
         reader_expr = self.get_expr(text)
         self.assertEqual(reader_expr, expr_tuple)
 
     def assertEval(self, text, expr_tuple):
+        "Assert that some text is evaluated to a particular s-expression."
         result_expr = self.get_eval(text)
         self.assertEqual(result_expr, expr_tuple)
 
