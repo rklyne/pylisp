@@ -1,5 +1,28 @@
 
-(def x 3)
+; The variables
 
-(print (+ x x))
+(def x 3)
+(def a 1)
+
+; The function declaration
+
+(def f
+  (fn [x]
+    (+ x a 1)))
+
+(print (f 2))
+(print (f 8))
+
+; The same function, done the macro way.
+
+(defmacro defn [name bindings &body]
+  (seq 'def name
+    (cons 'fn (cons bindings body))))
+
+(defn g [x]
+  (+ x a 1))
+
+(print (g 2))
+(print (g 8))
+
 
