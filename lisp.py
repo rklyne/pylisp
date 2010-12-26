@@ -51,9 +51,9 @@ class LispFunc(object):
     """
     def __init__(self, bindings, exprs, env):
         assert isinstance(env, LispEnv)
+        assert isinstance(bindings, Sequence), bindings
         self.exprs = exprs
         exact_bindings = bindings
-        assert isinstance(bindings, Sequence)
         if bindings[-1][0] == '&':
             self.extra_bindings = Symbol(bindings[-1][1:])
             exact_bindings = bindings[:-1]
@@ -136,6 +136,10 @@ def build_basic_env():
         else:
             assert truth, message
 
+# Boolean logic functions
+    def equals(a, b):
+        return a == b
+
 # The environment, with Lisp names.
     env = LispEnv({
         't': True,
@@ -152,6 +156,7 @@ def build_basic_env():
         'head': head,
         'tail': tail,
         'cons': cons,
+        'eq': equals,
     })
 
     return env
@@ -179,6 +184,9 @@ class Reader(object):
     _nl_expr = re.compile(r"[\n\r]")
     _ws_expr = re.compile(r"[\t\n\r, ]")
     _debug = True
+    symbol_start_chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_+-/*!?$&^~#'
+    digits = '0123456789'
+    symbol_chars = digits
 
     def __init__(self, input_func=raw_input):
         self._raw_input = input_func
@@ -242,11 +250,7 @@ class Reader(object):
         self._drop_ws()
         return self.get_char()
 
-    def get_expr(self,
-        digits='0123456789',
-        symbol_start_chars='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_+-/*!?$&^~#',
-        symbol_chars=''
-    ):
+    def get_expr(self):
         """Reads a form and returns one full s-expression. An s-expression may be:
         0. A reader macro: These start with "#"
         1. A Symbol
@@ -268,23 +272,23 @@ class Reader(object):
         if c == '#':
             raise ReaderError, "No such macro"
         # 1. A Symbol
-        if c in symbol_start_chars:
+        if c in self.symbol_start_chars:
             sym = c
             c = self.peek_char()
-            while c and (c in symbol_chars or c in symbol_start_chars):
+            while c and (c in self.symbol_chars or c in self.symbol_start_chars):
                 sym += c
                 self.get_char()
                 c = self.peek_char()
             return Symbol(sym)
         # 2. A number
-        if c in digits:
+        if c in self.digits:
             n = c
-            while self.peek_char() and self.peek_char() in digits:
+            while self.peek_char() and self.peek_char() in self.digits:
                 n += self.get_char()
             # Detect floating point numbers:
             if self.peek_char() == '.':
                 n += self.get_char()
-                while self.peek_char() and self.peek_char() in digits:
+                while self.peek_char() and self.peek_char() in self.digits:
                     n += self.get_char()
                 return float(n)
             return int(n)
@@ -374,10 +378,13 @@ def lisp_eval(expr, env=basic_env):
     """PyLisp Evaluator.
     Reserved words:
     * def
+    * defmacro
     * progn
+    * quote
     * nil
     * t
     * if
+    * fn
     """
     type_e = type(expr)
     if type_e is Symbol:
@@ -432,7 +439,7 @@ def lisp_eval(expr, env=basic_env):
             if lisp_eval(test):
                 return lisp_eval(body)
             elif else_body is not None:
-                return list_eval(else_body)
+                return lisp_eval(else_body)
         else:
             func = lisp_eval(f, env)
             args = r

@@ -100,14 +100,22 @@ class EvalTests(LispTest):
         expr = self.get_eval("(def f (fn [x] (+ x 1)))")
         self.assertEval("(f 2)", 3)
 
+    def test_conditional_branching(self):
+        self.assertEval("(if t 2 3)", 2)
+        self.assertEval("(if nil 2 3)", 3)
+        self.assertEval("(if nil 2)", None)
+
     def test_defmacro(self):
         """Test defining macros"""
+
+        # A macro that runs code when
         code = """
-        (defmacro when [test &body]
-          (seq 'if test (cons 'progn body)))"""
+        (defmacro when7 [test &body]
+          (seq 'if (seq 'eq test '7) (cons 'progn body)))
+        """
         self.get_eval(code)
-        self.assertEval("(when t 2)", 2)
-        self.assertEval("(when nil 2)", None)
+        self.assertEval("(when7 7 2)", 2)
+        self.assertEval("(when7 3 2)", None)
 
 class EnvTest(LispTest):
     def test_lookup(self):
