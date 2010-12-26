@@ -11,6 +11,9 @@ import re
 
 # Exceptions
 class LispError(Exception): pass
+class LispTraceableError(LispError):
+    # TODO: Implement Lisp tracebacks
+    pass
 class LispRuntimeError(RuntimeError): pass
 class ReaderError(LispError): pass
 class ExpressionEvalError(LispError): pass
@@ -140,8 +143,8 @@ def build_basic_env():
         else:
             assert truth, message
 
-    def _lisp_eval(*t, **k):
-        return lisp_eval(*t, **k)
+    def _lisp_eval(code):
+        return lisp_eval(code)
 
 # Boolean logic functions
     def equals(a, b):
@@ -206,18 +209,14 @@ def get_simple_env():
         simple_env = LispEnv({}, _simple_env)
     return simple_env
 
-def resolve_def(var, env):
+def resolve_def(var, env1, env2):
     try:
-        return env[var]
+        return env1[var]
     except KeyError:
-        raise
-        e = env
-        dicts = [e]
-        while hasattr(e, 'parent'):
-            e = e.parent
-            dicts.append(e)
-        raise LookupError(var, dicts)
-
+        try:
+            return env2[var]
+        except KeyError:
+            raise LookupError(var)
 
 # The Reader
 
@@ -419,7 +418,7 @@ class StringReader(Reader):
 
 
 # The Evaluator (the main bit)
-def lisp_eval(expr, env=None):
+def lisp_eval(expr, env=None, private_env=None):
     """PyLisp Evaluator.
     Reserved words:
     * def
@@ -433,12 +432,14 @@ def lisp_eval(expr, env=None):
     """
     if env is None:
         env = get_simple_env()
+    local_env = LispEnv({}, private_env)
+
     type_e = type(expr)
     if type_e is Symbol:
         # 'nil' and 't' can't be overridden.
         if   expr == 'nil': return None
         elif expr == 't': return True
-        else: return resolve_def(expr, env)
+        else: return resolve_def(expr, local_env, env)
     elif type_e is int: return expr
     elif type_e is float: return expr
     elif isinstance(expr, tuple):
@@ -451,7 +452,7 @@ def lisp_eval(expr, env=None):
             name = r[0]
             assert type(name) is Symbol, name
             expr = r[1]
-            value = lisp_eval(expr, env)
+            value = lisp_eval(expr, env, private_env)
             env[name] = value
             return value
         elif f == 'defmacro':
@@ -467,7 +468,7 @@ def lisp_eval(expr, env=None):
         elif f == 'progn':
             ret = None
             while r:
-                ret = lisp_eval(r[0], env)
+                ret = lisp_eval(r[0], env, private_env)
                 r = r[1:]
             return ret
         elif f == 'quote':
@@ -483,10 +484,10 @@ def lisp_eval(expr, env=None):
                 else_body = r[2]
             test = r[0]
             body = r[1]
-            if lisp_eval(test):
-                return lisp_eval(body)
+            if lisp_eval(test, env, private_env):
+                return lisp_eval(body, env, private_env)
             elif else_body is not None:
-                return lisp_eval(else_body)
+                return lisp_eval(else_body, env, private_env)
         elif f == 'let':
             # TODO: implement 'let'
             raise NotImplementedError
@@ -494,14 +495,14 @@ def lisp_eval(expr, env=None):
             # TODO: implement 'binding'
             raise NotImplementedError
         else:
-            func = lisp_eval(f, env)
+            func = lisp_eval(f, env, private_env)
             args = r
             macro = hasattr(func, '_lisp_macro')
             if not macro:
-                args = map(lambda x: lisp_eval(x, env), args)
+                args = map(lambda x: lisp_eval(x, env, private_env), args)
             ret = lisp_apply(func, args, env)
             if macro:
-                return lisp_eval(ret)
+                return lisp_eval(ret, env, private_env)
             return ret
     else:
         raise LispRuntimeError("Cannot evaluate this expression.", expr)

@@ -161,6 +161,25 @@ class EnvTest(LispTest):
             self.assert_(env.has_key(key), msg="Expected basic env to have key '%s'" % key)
             self.assertNotEqual(env[key], None)
 
+class ScopeTests(LispTest):
+    def test_fn_scope(self):
+        self.get_eval("(def a 1)")
+        self.get_eval("(defn g [a] a)")
+        self.assertEval("(g 3)", 3)
+
+    def test_fn_scope_privacy(self):
+        self.get_eval("(def a 1)")
+        self.get_eval("(defn g [x] (+ x (h a)))")
+        self.get_eval("(defn h [a] (+ x a))")
+        try:
+            self.assertEval("(g 30)", 41)
+        except lisp.LookupError, le:
+            self.assertEquals(le.args[0], 'x')
+        else:
+            self.fail("Expected LookupError('x')")
+        self.get_eval("(def x 10)")
+        self.assertEval("(g 30)", 41)
+
 if __name__ == '__main__':
     unittest.main()
 
