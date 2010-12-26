@@ -118,6 +118,12 @@ class EvalTests(LispTest):
         self.assertEval("(when7 3 2)", None)
 
 class EnvTest(LispTest):
+    basic_env_keys = [
+        '+',
+        'seq',
+        'cons',
+    ]
+
     def test_lookup(self):
         env = lisp.LispEnv({})
         sym_a = lisp.Symbol('a')
@@ -127,12 +133,33 @@ class EnvTest(LispTest):
     def test_parent_lookup(self):
         env = lisp.LispEnv({})
         sym_a = lisp.Symbol('a')
+        sym_b = lisp.Symbol('b')
         env[sym_a] = 1
         env2 = lisp.LispEnv({sym_a: 2}, parent=env)
+        self.assertEqual(env2[sym_a], 2)
+
         env3 = lisp.LispEnv({}, parent=env2)
         env4 = lisp.LispEnv({sym_a: 4}, parent=env3)
         self.assertEqual(env4[sym_a], 4)
 
+        env5 = lisp.LispEnv({sym_b: 4}, parent=env3)
+        env6 = lisp.LispEnv({sym_b: 4}, parent=env5)
+        self.assert_(env6.has_key(sym_b), "Expected to find 'b' in env")
+        self.assert_(env6.has_key(sym_a), "Expected to find 'a' in env")
+        self.assertEqual(env6[sym_b], 4)
+        self.assertEqual(env6[sym_a], 2)
+
+    def test_basic_env(self):
+        env = lisp.get_basic_env()
+        for key in self.basic_env_keys:
+            self.assert_(env.has_key(key), msg="Expected basic env to have key '%s'" % key)
+            self.assertNotEqual(env[key], None)
+
+    def test_simple_env(self):
+        env = lisp.get_simple_env()
+        for key in self.basic_env_keys:
+            self.assert_(env.has_key(key), msg="Expected basic env to have key '%s'" % key)
+            self.assertNotEqual(env[key], None)
 
 if __name__ == '__main__':
     unittest.main()

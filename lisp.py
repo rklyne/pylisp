@@ -30,16 +30,19 @@ class LispEnv(dict):
     def __init__(self, mapping, parent=None):
         super(LispEnv, self).__init__(mapping)
         if parent is not None:
-            assert isinstance(parent, LispEnv)
+            assert isinstance(parent, LispEnv), parent
         self.parent = parent
     def __getitem__(self, key, *t, **k):
         if not self._has_key(key):
-            if self.parent:
-                return self.parent[key]
+            if self.parent is not None:
+                return self.parent.__getitem__(key, *t, **k)
         return super(LispEnv, self).__getitem__(key, *t, **k)
+    def __setitem__(self, *t, **k):
+        assert type(t[0]) is Symbol, (t[0], type(t[0]))
+        return super(LispEnv, self).__setitem__(*t, **k)
     def _has_key(self, key):
         return super(LispEnv, self).has_key(key)
-    def has_key(self):
+    def has_key(self, key):
         if self._has_key(key):
             return True
         return self.parent.has_key(key)
@@ -50,7 +53,7 @@ class LispFunc(object):
     needs this wrapper to make it
     """
     def __init__(self, bindings, exprs, env):
-        assert isinstance(env, LispEnv)
+        assert isinstance(env, LispEnv), env
         assert isinstance(bindings, Sequence), bindings
         self.exprs = exprs
         exact_bindings = bindings
@@ -79,7 +82,8 @@ class LispFunc(object):
             ret = lisp_eval(expr, env)
         return ret
 
-class LispMacro(LispFunc): pass
+class LispMacro(LispFunc):
+    _lisp_macro = True
 
 env_stack = []
 def lisp_apply(f, args, env):
@@ -130,11 +134,14 @@ def build_basic_env():
         print
 
 # System functions
-    def assert_func(self, truth, message=_no_value):
+    def assert_func(truth, message=_no_value):
         if message is _no_value:
             assert truth
         else:
             assert truth, message
+
+    def _lisp_eval(*t, **k):
+        return lisp_eval(*t, **k)
 
 # Boolean logic functions
     def equals(a, b):
@@ -157,21 +164,59 @@ def build_basic_env():
         'tail': tail,
         'cons': cons,
         'eq': equals,
+        'eval': _lisp_eval,
     })
 
     return env
 
+# basic_env is the bare minimum Lisp environment
+_basic_env = build_basic_env()
 basic_env = None
+# simple_env is an extension os basic_env with core.pyl loaded
+_simple_env = None
+simple_env = None
 def reset():
     global basic_env
-    basic_env = build_basic_env()
+    global _simple_env
+    global simple_env
+    basic_env = None
+    _simple_env = None
+    simple_env = None
 reset()
+
+def get_basic_env():
+    global basic_env
+    if basic_env is None:
+        basic_env = LispEnv({}, _basic_env)
+    return basic_env
+
+def build_simple_env():
+    env = LispEnv({}, get_basic_env())
+    core_file_name = 'core.pyl'
+    core_reader = FileReader(core_file_name)
+    for expr in core_reader:
+        lisp_eval(expr, env)
+    return env
+def get_simple_env():
+    global _simple_env
+    global simple_env
+    if simple_env is None:
+        if _simple_env is None:
+            _simple_env = build_simple_env()
+        simple_env = LispEnv({}, _simple_env)
+    return simple_env
 
 def resolve_def(var, env):
     try:
         return env[var]
     except KeyError:
-        raise LookupError(var)
+        raise
+        e = env
+        dicts = [e]
+        while hasattr(e, 'parent'):
+            e = e.parent
+            dicts.append(e)
+        raise LookupError(var, dicts)
 
 
 # The Reader
@@ -374,7 +419,7 @@ class StringReader(Reader):
 
 
 # The Evaluator (the main bit)
-def lisp_eval(expr, env=basic_env):
+def lisp_eval(expr, env=None):
     """PyLisp Evaluator.
     Reserved words:
     * def
@@ -386,6 +431,8 @@ def lisp_eval(expr, env=basic_env):
     * if
     * fn
     """
+    if env is None:
+        env = get_simple_env()
     type_e = type(expr)
     if type_e is Symbol:
         # 'nil' and 't' can't be overridden.
@@ -440,10 +487,16 @@ def lisp_eval(expr, env=basic_env):
                 return lisp_eval(body)
             elif else_body is not None:
                 return lisp_eval(else_body)
+        elif f == 'let':
+            # TODO: implement 'let'
+            raise NotImplementedError
+        elif f == 'binding':
+            # TODO: implement 'binding'
+            raise NotImplementedError
         else:
             func = lisp_eval(f, env)
             args = r
-            macro = isinstance(func, LispMacro)
+            macro = hasattr(func, '_lisp_macro')
             if not macro:
                 args = map(lambda x: lisp_eval(x, env), args)
             ret = lisp_apply(func, args, env)
@@ -455,14 +508,15 @@ def lisp_eval(expr, env=basic_env):
 
 run = lisp_eval
 
-
-def repl(debug=False):
+def repl(debug=False, env=None):
     """REPL:
     * R ead s-expressions and
     * E valuate them, then
     * P rint the results.
     * L oop."""
     reader = Reader()
+    if env is None:
+        env = get_default_env()
     try:
         while 1:
             try:
@@ -474,7 +528,7 @@ def repl(debug=False):
                 traceback.print_exc()
                 continue
             try:
-                s = run(expr)
+                s = lisp_eval(expr, env)
             except LispError:
                 print "EVAL ERROR:"
                 import traceback
@@ -503,26 +557,36 @@ def main():
     longopts = [
         'help',
         'verbose',
+        'bare',
     ]
     shortopts = '?hv'
     opts, args = getopt.getopt(args_in, shortopts, longopts)
 
     opt_help = False
     opt_verbose = 0
+    opt_bare = False
 
     for opt, value in opts:
         if opt in ['-h', '-?', '--help']:
             opt_help = True
         elif opt in ['-v', '--verbose']:
             opt_verbose += 1
+        elif opt in ['--bare']:
+            opt_bare = True
 
     debug = (opt_verbose >= 1)
 
     if opt_help:
         usage()
         return
-    elif not args:
-        repl(debug=debug)
+
+    if opt_bare:
+        env = get_basic_env()
+    else:
+        env = get_simple_env()
+
+    if not args:
+        repl(debug=debug, env=env)
     else:
         # Each spare arg is interpreted as a file name
         for filename in args:
@@ -530,7 +594,7 @@ def main():
                 print "Reading", filename
             reader = FileReader(filename)
             for expr in reader:
-                result = lisp_eval(expr)
+                result = lisp_eval(expr, env=env)
 
 if __name__ == '__main__':
     main()
