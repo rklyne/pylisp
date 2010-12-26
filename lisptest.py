@@ -120,14 +120,18 @@ class EvalTests(LispTest):
 class EnvTest(LispTest):
     def test_lookup(self):
         env = lisp.LispEnv({})
-        env['a'] = 1
-        self.assertEqual(env['a'], 1)
+        sym_a = lisp.Symbol('a')
+        env[sym_a] = 1
+        self.assertEqual(env[sym_a], 1)
 
     def test_parent_lookup(self):
         env = lisp.LispEnv({})
-        env['a'] = 1
-        env2 = lisp.LispEnv({'a': 2}, parent=env)
-        self.assertEqual(env2['a'], 2)
+        sym_a = lisp.Symbol('a')
+        env[sym_a] = 1
+        env2 = lisp.LispEnv({sym_a: 2}, parent=env)
+        env3 = lisp.LispEnv({}, parent=env2)
+        env4 = lisp.LispEnv({sym_a: 4}, parent=env3)
+        self.assertEqual(env4[sym_a], 4)
 
 
 if __name__ == '__main__':
