@@ -1,0 +1,5 @@
+
+(defmacro when [test, &body]
+  (seq 'if test (cons 'progn body)))
+
+
