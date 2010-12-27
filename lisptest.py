@@ -87,7 +87,7 @@ class ReaderTest(LispTest):
         else:
             self.fail("Expected a lisp.ReaderError")
 
-class EvalTests(LispTest):
+class EvalTest(LispTest):
     def test_addition(self):
         self.assertEval("(+ 3 4)", 7)
 
@@ -106,6 +106,11 @@ class EvalTests(LispTest):
         expr = self.get_eval("(def f (fn [x] (+ x 1)))")
         self.assertEval("(f 2)", 3)
 
+    def test_function_parameters(self):
+        "Test variable length function arguments"
+        expr = self.get_eval("(def f (fn [x &rest] rest))")
+        self.assertEval("(f 2 3 4 5)", (3, 4, 5))
+
     def test_conditional_branching(self):
         self.assertEval("(if t 2 3)", 2)
         self.assertEval("(if nil 2 3)", 3)
@@ -114,10 +119,10 @@ class EvalTests(LispTest):
     def test_defmacro(self):
         """Test defining macros"""
 
-        # A macro that runs code when
+        # A macro that runs code when some variable equals 7.
         code = """
         (defmacro when7 [test &body]
-          (seq 'if (seq 'eq test '7) (cons 'progn body)))
+          (list 'if (list 'eq test '7) (cons 'progn body)))
         """
         self.get_eval(code)
         self.assertEval("(when7 7 2)", 2)
@@ -167,7 +172,7 @@ class EnvTest(LispTest):
             self.assert_(env.has_key(key), msg="Expected basic env to have key '%s'" % key)
             self.assertNotEqual(env[key], None)
 
-class ScopeTests(LispTest):
+class ScopeTest(LispTest):
     def test_fn_scope(self):
         self.get_eval("(def a 1)")
         self.get_eval("(defn g [a] a)")
@@ -185,6 +190,18 @@ class ScopeTests(LispTest):
             self.fail("Expected LookupError('x')")
         self.get_eval("(def x 10)")
         self.assertEval("(g 30)", 41)
+
+    def test_let(self):
+        self.get_eval("(def a 1)")
+        self.get_eval("(defn g [x] (let [a 2] (+ x (h a))))")
+        self.get_eval("(defn h [x] (+ x a))")
+        self.assertEval("(g 10)", 13)
+
+    def test_binding(self):
+        self.get_eval("(def a 1)")
+        self.get_eval("(defn g [x] (binding [a 2] (+ x (h a))))")
+        self.get_eval("(defn h [x] (+ x a))")
+        self.assertEval("(g 10)", 14)
 
 if __name__ == '__main__':
     unittest.main()

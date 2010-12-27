@@ -21,6 +21,7 @@ class LookupError(LispError): pass
 
 
 # s-expression type
+# TODO: Make s-expressions look like linked lists
 class SExpr(tuple): pass
 class Sequence(tuple): pass
 
@@ -58,7 +59,7 @@ class LispFunc(object):
     def __init__(self, bindings, exprs, env):
         assert isinstance(env, LispEnv), env
         assert isinstance(bindings, Sequence), bindings
-        self.exprs = exprs
+        self.expr = SExpr((Symbol("progn"), ) + exprs)
         exact_bindings = bindings
         if bindings[-1][0] == '&':
             self.extra_bindings = Symbol(bindings[-1][1:])
@@ -70,7 +71,7 @@ class LispFunc(object):
         # (Python code is Lisp callable, so this is also required to make Lisp
         # functions Lisp callable ;))
         ret = None
-        local_env = {}
+        local_env = LispEnv({})
         args = args_in
         for name in self.bindings:
             assert isinstance(name, Symbol), (name, self.bindings)
@@ -79,10 +80,9 @@ class LispFunc(object):
         if self.extra_bindings:
             local_env[self.extra_bindings] = args
         elif args or kwargs_in:
-            raise LispError("Too many params to function", self, args_in)
-        env = LispEnv(local_env, parent=self.def_env)
-        for expr in self.exprs:
-            ret = lisp_eval(expr, env)
+            raise LispError("Too many params to function", self, args_in, kwargs_in)
+        env = self.def_env
+        ret = lisp_eval(self.expr, env, local_env)
         return ret
 
 class LispMacro(LispFunc):
@@ -120,8 +120,10 @@ def build_basic_env():
         return res
 
 # Sequence functions
-    def seq(*args):
+    def list_(*args):
         return SExpr(args)
+    def seq(*args):
+        return Sequence(args)
     def head(seq):
         return seq[0]
     def tail(seq):
@@ -143,7 +145,7 @@ def build_basic_env():
         else:
             assert truth, message
 
-    def _lisp_eval(code):
+    def lisp_eval_(code):
         return lisp_eval(code)
 
 # Boolean logic functions
@@ -161,13 +163,13 @@ def build_basic_env():
         'str': string,
         'assert': assert_func,
         'apply': apply,
-        'list': seq,
+        'list': list_,
         'seq': seq,
         'head': head,
         'tail': tail,
         'cons': cons,
         'eq': equals,
-        'eval': _lisp_eval,
+        'eval': lisp_eval_,
     })
 
     return env
@@ -285,6 +287,9 @@ class Reader(object):
         return c
 
     def peek_char(self):
+        """Ensure that there is data, excepting at EOF.
+        Returns one character without consuming it.
+        """
         self._ensure_data()
         if not self._buffer:
             return ""
@@ -296,7 +301,7 @@ class Reader(object):
 
     def get_expr(self):
         """Reads a form and returns one full s-expression. An s-expression may be:
-        0. A reader macro: These start with "#"
+        0. A reader macro. These produce more complex lisp forms.
         1. A Symbol
         2. A number, int or float.
         3. A string
@@ -312,7 +317,12 @@ class Reader(object):
         if c == "'":
             quoted_expr = self.get_expr()
             return SExpr((Symbol('quote'), quoted_expr))
-        # 0.2 #-macros
+        # 0.2 `,-quoting. (backtick)
+        if c == "`":
+            # TODO: Implement this quoting mechanism:
+            # In "`(+ 1 2 ~a)" everything is quoted but a.
+            raise NotImplementedError
+        # 0.3 #-macros
         if c == '#':
             raise ReaderError, "No such macro"
         # 1. A Symbol
@@ -418,6 +428,7 @@ class StringReader(Reader):
 
 
 # The Evaluator (the main bit)
+# TODO: Build a dictionary of symbols to lambdas to handle special forms quickly.
 def lisp_eval(expr, env=None, private_env=None):
     """PyLisp Evaluator.
     Reserved words:
@@ -429,6 +440,8 @@ def lisp_eval(expr, env=None, private_env=None):
     * t
     * if
     * fn
+    * let
+    * binding
     """
     if env is None:
         env = get_simple_env()
@@ -446,7 +459,6 @@ def lisp_eval(expr, env=None, private_env=None):
         if len(expr) == 0:
             return None
         f, r = expr[0], expr[1:]
-        type_f = type(f)
         if f == 'def':
             assert len(r) == 2, r
             name = r[0]
@@ -490,20 +502,34 @@ def lisp_eval(expr, env=None, private_env=None):
                 return lisp_eval(else_body, env, private_env)
         elif f == 'let':
             # TODO: implement 'let'
-            raise NotImplementedError
+            bindings = r[0]
+            body = r[1:]
+            assert isinstance(bindings, Sequence)
+            new_private_env = LispEnv({}, private_env)
+            while bindings:
+                name = bindings[0]
+                expr = bindings[1]
+                bindings = bindings[2:]
+                new_private_env[name] = lisp_eval(expr, env, new_private_env)
+            body = SExpr((Symbol("progn"), ) + body)
+            return lisp_eval(body, env, new_private_env)
         elif f == 'binding':
             # TODO: implement 'binding'
             raise NotImplementedError
         else:
+            # If not a special form, then treat this as a function.
+            # Evaluate the first form and keep it as the function object.
             func = lisp_eval(f, env, private_env)
+            assert callable(func), (func, f)
             args = r
             macro = hasattr(func, '_lisp_macro')
             if not macro:
                 args = map(lambda x: lisp_eval(x, env, private_env), args)
-            ret = lisp_apply(func, args, env)
-            if macro:
+                ret = lisp_apply(func, args, env)
+                return ret
+            else:
+                ret = lisp_apply(func, args, env)
                 return lisp_eval(ret, env, private_env)
-            return ret
     else:
         raise LispRuntimeError("Cannot evaluate this expression.", expr)
 
