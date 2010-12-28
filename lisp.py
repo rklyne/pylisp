@@ -44,45 +44,101 @@ class LispEnv(dict):
     def __setitem__(self, *t, **k):
         assert type(t[0]) is Symbol, (t[0], type(t[0]))
         return super(LispEnv, self).__setitem__(*t, **k)
+    def __nonzero__(self):
+        if super(LispEnv, self).__nonzero__():
+            return True
+        if self.parent is not None:
+            return bool(self.parent)
+        return False
     def _has_key(self, key):
         return super(LispEnv, self).has_key(key)
     def has_key(self, key):
         if self._has_key(key):
             return True
-        return self.parent.has_key(key)
+        if self.parent is not None:
+            return self.parent.has_key(key)
+        return False
+    def lookup(self, key):
+        return self[key]
+
+    def _flatten(self):
+        "Written to help debugging."
+        dct = {}
+        for k, v in self.items():
+            dct[k] = v
+        if self.parent is not None:
+            dct.update(self.parent._flatten())
+        return dct
+
+class StackableLispEnv(object):
+    def __init__(self, base):
+        assert isinstance(base, LispEnv), base
+        self._stack = []
+        self._base = base
+        self.push(base)
+
+    def __getattr__(self, key, *t, **k):
+        if key in [
+            'push',
+            'pop',
+            '_stack',
+            'define',
+        ]:
+            return self.__dict__[key]
+        return getattr(self._stack[-1], key, *t, **k)
+
+    def __hasattr__(self, key, *t, **k):
+        return hasattr(self._stack[-1], key, *t, **k)
+
+    def push(self, env):
+        self._stack.append(env)
+    def pop(self):
+        self._stack.pop()
+        assert self._stack
+
+    def define(self, key, value):
+        self._stack[-1][key] = value
+
+    def lookup(self, key):
+        return self._stack[-1][key]
+
+    def new_scope(self, mapping=None):
+        if mapping is None:
+            mapping = {}
+        return LispEnv(mapping, self._stack[-1])
 
 class LispFunc(object):
     extra_bindings = None
     """In general, a Python function is a PyLisp function, and a PyLisp function
     needs this wrapper to make it
     """
-    def __init__(self, bindings, exprs, env):
-        assert isinstance(env, LispEnv), env
-        assert isinstance(bindings, Sequence), bindings
+    def __init__(self, bindings, exprs, env, local_env):
+        assert isinstance(env, StackableLispEnv), env
+        assert type(bindings) is Sequence, bindings
         self.expr = SExpr((Symbol("progn"), ) + exprs)
         exact_bindings = bindings
-        if bindings[-1][0] == '&':
+        if bindings and bindings[-1][0] == '&':
             self.extra_bindings = Symbol(bindings[-1][1:])
             exact_bindings = bindings[:-1]
         self.bindings = exact_bindings
         self.def_env = env
+        self.def_local_env = LispEnv({}, local_env)
     def __call__(self, *args_in, **kwargs_in):
         # Implemented this so that Lisp code is Python callable.
         # (Python code is Lisp callable, so this is also required to make Lisp
         # functions Lisp callable ;))
         ret = None
-        local_env = LispEnv({})
         args = args_in
         for name in self.bindings:
             assert isinstance(name, Symbol), (name, self.bindings)
-            local_env[name] = args[0]
+            self.def_local_env[name] = args[0]
             args = args[1:]
         if self.extra_bindings:
-            local_env[self.extra_bindings] = args
+            self.def_local_env[self.extra_bindings] = args
         elif args or kwargs_in:
             raise LispError("Too many params to function", self, args_in, kwargs_in)
         env = self.def_env
-        ret = lisp_eval(self.expr, env, local_env)
+        ret = lisp_eval(self.expr, env, self.def_local_env)
         return ret
 
 class LispMacro(LispFunc):
@@ -151,6 +207,8 @@ def build_basic_env():
 # Boolean logic functions
     def equals(a, b):
         return a == b
+    def not_(a):
+        return not a
 
 # The environment, with Lisp names.
     env = LispEnv({
@@ -169,6 +227,8 @@ def build_basic_env():
         'tail': tail,
         'cons': cons,
         'eq': equals,
+        '=': equals,
+        'not': not_,
         'eval': lisp_eval_,
     })
 
@@ -189,19 +249,28 @@ def reset():
     simple_env = None
 reset()
 
-def get_basic_env():
+def make_stackable_env(env):
+    return StackableLispEnv(env)
+
+def _get_basic_env():
     global basic_env
     if basic_env is None:
         basic_env = LispEnv({}, _basic_env)
     return basic_env
+def get_basic_env():
+    return make_stackable_env(_get_basic_env())
 
 def build_simple_env():
-    env = LispEnv({}, get_basic_env())
+    base_env = LispEnv({}, _get_basic_env())
+    env = make_stackable_env(base_env)
     core_file_name = 'core.pyl'
     core_reader = FileReader(core_file_name)
+    exprs = []
     for expr in core_reader:
-        lisp_eval(expr, env)
-    return env
+        exprs.append(expr)
+    expr = SExpr((Symbol("progn"), SExpr(exprs)))
+    lisp_eval(expr, env, LispEnv({}))
+    return base_env
 def get_simple_env():
     global _simple_env
     global simple_env
@@ -209,14 +278,14 @@ def get_simple_env():
         if _simple_env is None:
             _simple_env = build_simple_env()
         simple_env = LispEnv({}, _simple_env)
-    return simple_env
+    return make_stackable_env(simple_env)
 
 def resolve_def(var, env1, env2):
     try:
-        return env1[var]
+        return env1.lookup(var)
     except KeyError:
         try:
-            return env2[var]
+            return env2.lookup(var)
         except KeyError:
             raise LookupError(var)
 
@@ -230,7 +299,7 @@ class Reader(object):
     _nl_expr = re.compile(r"[\n\r]")
     _ws_expr = re.compile(r"[\t\n\r, ]")
     _debug = True
-    symbol_start_chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_+-/*!?$&^~#'
+    symbol_start_chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_+-/*!?$&^~#='
     digits = '0123456789'
     symbol_chars = digits
 
@@ -272,7 +341,8 @@ class Reader(object):
             self._last_form += self._buffer[:count]
         self._buffer = self._buffer[count:]
     def _drop_until(self, expr, matches=True):
-        # TODO: This could be much more efficient.
+        # TODO: This could be much more efficient if I dropped several chars at
+        # once. The RE is matching them all anyway...
         while self.peek_char() and (expr.match(self.peek_char()) is not None) == matches:
             self._buffer_drop()
     def _drop_ws(self):
@@ -445,6 +515,7 @@ def lisp_eval(expr, env=None, private_env=None):
     """
     if env is None:
         env = get_simple_env()
+    assert type(env) is StackableLispEnv, (type(env), env)
     local_env = LispEnv({}, private_env)
 
     type_e = type(expr)
@@ -457,6 +528,7 @@ def lisp_eval(expr, env=None, private_env=None):
     elif type_e is float: return expr
     elif isinstance(expr, tuple):
         if len(expr) == 0:
+            # Lisp "()" == Lisp "nil"
             return None
         f, r = expr[0], expr[1:]
         if f == 'def':
@@ -465,7 +537,8 @@ def lisp_eval(expr, env=None, private_env=None):
             assert type(name) is Symbol, name
             expr = r[1]
             value = lisp_eval(expr, env, private_env)
-            env[name] = value
+            env.define(name, value)
+            assert env.has_key(name), env._flatten()
             return value
         elif f == 'defmacro':
             assert len(r) >= 3, r
@@ -473,9 +546,8 @@ def lisp_eval(expr, env=None, private_env=None):
             # A new LispMacro, with bindings and an expression body
             bindings = r[1]
             exprs = r[2:]
-            value = LispMacro(bindings, exprs, env)
-            env[name] = value
-            value.name = name
+            value = LispMacro(bindings, exprs, env, private_env)
+            env.define(name, value)
             return value
         elif f == 'progn':
             ret = None
@@ -489,7 +561,7 @@ def lisp_eval(expr, env=None, private_env=None):
         elif f == 'fn':
             assert len(r) >= 2, r
             # A new LispFunc, with bindings and an expression body
-            return LispFunc(r[0], r[1:], env)
+            return LispFunc(r[0], r[1:], env, private_env)
         elif f == 'if':
             else_body = None
             if len(r) == 3:
@@ -501,7 +573,6 @@ def lisp_eval(expr, env=None, private_env=None):
             elif else_body is not None:
                 return lisp_eval(else_body, env, private_env)
         elif f == 'let':
-            # TODO: implement 'let'
             bindings = r[0]
             body = r[1:]
             assert isinstance(bindings, Sequence)
@@ -509,13 +580,27 @@ def lisp_eval(expr, env=None, private_env=None):
             while bindings:
                 name = bindings[0]
                 expr = bindings[1]
-                bindings = bindings[2:]
                 new_private_env[name] = lisp_eval(expr, env, new_private_env)
+                bindings = bindings[2:]
             body = SExpr((Symbol("progn"), ) + body)
             return lisp_eval(body, env, new_private_env)
         elif f == 'binding':
-            # TODO: implement 'binding'
-            raise NotImplementedError
+            bindings = r[0]
+            body = r[1:]
+            assert isinstance(bindings, Sequence)
+            new_bindings = {}
+            while bindings:
+                name = bindings[0]
+                expr = bindings[1]
+                new_bindings[name] = lisp_eval(expr, env, private_env)
+                bindings = bindings[2:]
+            new_env = env.new_scope(new_bindings)
+            body = SExpr((Symbol("progn"), ) + body)
+            try:
+                env.push(new_env)
+                return lisp_eval(body, env, private_env)
+            finally:
+                env.pop()
         else:
             # If not a special form, then treat this as a function.
             # Evaluate the first form and keep it as the function object.
@@ -545,7 +630,7 @@ def repl(debug=False, env=None):
     if env is None:
         env = get_default_env()
     try:
-        while 1:
+        while True:
             try:
                 expr = reader.get_expr()
                 if debug: print "READ:", expr

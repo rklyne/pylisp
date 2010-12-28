@@ -106,6 +106,11 @@ class EvalTest(LispTest):
         expr = self.get_eval("(def f (fn [x] (+ x 1)))")
         self.assertEval("(f 2)", 3)
 
+    def test_no_function_args(self):
+        "Test defining and calling a funciton with no parameters"
+        self.get_eval("(defn g [] 2)")
+        self.assertEval("(g)", 2)
+
     def test_function_parameters(self):
         "Test variable length function arguments"
         expr = self.get_eval("(def f (fn [x &rest] rest))")
@@ -128,11 +133,32 @@ class EvalTest(LispTest):
         self.assertEval("(when7 7 2)", 2)
         self.assertEval("(when7 3 2)", None)
 
+    def test_let(self):
+        self.get_eval("(def a 1)")
+        self.get_eval("(defn g [x] (let [a 2] (+ x (h a))))")
+        self.get_eval("(let [a 3] (defn h [x] (+ x a)))")
+        self.assertEval("(g 10)", 15)
+
+    def test_recursion(self):
+        "Factorial calculation is the traditional recursion test..."
+        self.get_eval("(defn factorial [n] (if (= n 1) 1 (* n (factorial (- n 1)))))")
+        self.assertEval("(factorial 4)", 24)
+
+    def test_special_cases(self):
+        self.assertEval("()", None)
+        self.assertEval("nil", None)
+        self.assertEval("t", True)
+
 class EnvTest(LispTest):
     basic_env_keys = [
         '+',
         'seq',
         'cons',
+    ]
+
+    core_pyl_keys = [
+        'defn',
+        'when',
     ]
 
     def test_lookup(self):
@@ -164,13 +190,26 @@ class EnvTest(LispTest):
         env = lisp.get_basic_env()
         for key in self.basic_env_keys:
             self.assert_(env.has_key(key), msg="Expected basic env to have key '%s'" % key)
-            self.assertNotEqual(env[key], None)
+            self.assertNotEqual(env.lookup(key), None)
 
     def test_simple_env(self):
         env = lisp.get_simple_env()
-        for key in self.basic_env_keys:
-            self.assert_(env.has_key(key), msg="Expected basic env to have key '%s'" % key)
-            self.assertNotEqual(env[key], None)
+        keys = self.basic_env_keys + self.core_pyl_keys
+        for key in keys:
+            self.assert_(env.has_key(key), msg="Expected simple env to have key '%s'" % key)
+            self.assertNotEqual(env.lookup(key), None)
+
+    def test_stackable(self):
+        env = lisp.LispEnv({})
+        sym_a = lisp.Symbol('a')
+        sym_b = lisp.Symbol('b')
+        env[sym_a] = 1
+        self.assertEqual(env[sym_a], 1)
+
+        env = lisp.make_stackable_env(env)
+        env.define(sym_b, 2)
+        self.assertEqual(env.lookup(sym_a), 1)
+        self.assertEqual(env.lookup(sym_b), 2)
 
 class ScopeTest(LispTest):
     def test_fn_scope(self):
@@ -198,6 +237,11 @@ class ScopeTest(LispTest):
         self.assertEval("(g 10)", 13)
 
     def test_binding(self):
+        self.get_eval("(def a 1)")
+        self.get_eval("(defn g [] a)")
+        self.assertEval("(binding [a 2] (g))", 2)
+
+    def test_deeper_binding(self):
         self.get_eval("(def a 1)")
         self.get_eval("(defn g [x] (binding [a 2] (+ x (h a))))")
         self.get_eval("(defn h [x] (+ x a))")
