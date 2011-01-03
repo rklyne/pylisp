@@ -15,10 +15,6 @@
 
 ; The same function, done the macro way.
 
-(defmacro defn [name bindings &body]
-  (seq 'def name
-    (cons 'fn (cons bindings body))))
-
 (defn g [x]
   (+ x a 1))
 
