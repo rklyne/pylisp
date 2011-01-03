@@ -11,4 +11,8 @@
 (defmacro binding [bindings &exprs]
   (cons 'binding* (cons bindings (cons 'progn exprs))))
 
+; Same for 'let*' and 'let'
+(defmacro let [bindings &exprs]
+  (cons 'let* (cons bindings (cons 'progn exprs))))
+
 

@@ -419,7 +419,6 @@ class Reader(object):
             return return_func(SExpr((Symbol('quote'), quoted_expr)))
         # 0.2.a `()-quoting. (backtick)
         if c == "`":
-            # TODO: Implement this quoting mechanism:
             # In "`(+ x 1 ~a)" everything is quoted but 'a'.
             def quote_(expr):
                 if type(expr) is UnquoteWrapper:
@@ -537,6 +536,7 @@ class StringReader(Reader):
 
 # The Evaluator (the main bit)
 # TODO: Build a dictionary of symbols to lambdas to handle special forms quickly.
+
 def lisp_eval(expr, env=None, private_env=None):
     """PyLisp Evaluator.
     Reserved words:
@@ -610,7 +610,7 @@ def lisp_eval(expr, env=None, private_env=None):
                 return lisp_eval(body, env, private_env)
             elif else_body is not None:
                 return lisp_eval(else_body, env, private_env)
-        elif f == 'let':
+        elif f == 'let*':
             bindings = r[0]
             body = r[1:]
             assert isinstance(bindings, Sequence)
@@ -620,7 +620,6 @@ def lisp_eval(expr, env=None, private_env=None):
                 expr = bindings[1]
                 new_private_env[name] = lisp_eval(expr, env, new_private_env)
                 bindings = bindings[2:]
-            body = SExpr((Symbol("progn"), ) + body)
             return lisp_eval(body, env, new_private_env)
         elif f == 'binding*':
             bindings = r[0]
