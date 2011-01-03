@@ -14,6 +14,7 @@ class LispError(Exception): pass
 class LispTraceableError(LispError):
     # TODO: Implement Lisp tracebacks
     pass
+class LispCallError(LispError): pass
 class LispRuntimeError(RuntimeError): pass
 class ReaderError(LispError): pass
 class ExpressionEvalError(LispError): pass
@@ -77,6 +78,13 @@ class StackableLispEnv(object):
         self._base = base
         self.push(base)
 
+    def __str__(self):
+        return '<%s "%s">' % (
+            self.__class__.__name__,
+            getattr(self, 'name', '(unnamed)'),
+        )
+    __repr__ = __str__
+
     def __getattr__(self, key, *t, **k):
         if key in [
             'push',
@@ -137,9 +145,24 @@ class LispFunc(object):
             self.def_local_env[self.extra_bindings] = args
         elif args or kwargs_in:
             raise LispError("Too many params to function", self, args_in, kwargs_in)
-        env = self.def_env
+        env = get_thread_env()
+        if self.def_env is not env:
+            raise LispCallError("Data from another Lisp", env)
         ret = lisp_eval(self.expr, env, self.def_local_env)
         return ret
+
+_thread_envs = {}
+def get_thread_env():
+    import thread
+    thread_id = thread.get_ident()
+    env = _thread_envs.get(thread_id)
+    if env is not None:
+        return env
+    return None
+def set_thread_env(env):
+    import thread
+    thread_id = thread.get_ident()
+    _thread_envs[thread_id] = env
 
 class LispMacro(LispFunc):
     _lisp_macro = True
@@ -149,10 +172,11 @@ def lisp_apply(f, args, env):
     assert callable(f), f
     try:
         # XXX: Not thread safe except in pure PyLisp code
-        env_stack.append(env)
+        env0 = get_thread_env()
+        set_thread_env(env)
         return f(*args)
     finally:
-        assert env_stack.pop() is env
+        set_thread_env(env0)
 
 def build_basic_env():
     _no_value = object()
@@ -239,18 +263,19 @@ _basic_env = build_basic_env()
 basic_env = None
 # simple_env is an extension os basic_env with core.pyl loaded
 _simple_env = None
-simple_env = None
 def reset():
     global basic_env
     global _simple_env
-    global simple_env
     basic_env = None
     _simple_env = None
-    simple_env = None
+    _thread_envs.clear()
+    env_stack[:] = []
 reset()
 
-def make_stackable_env(env):
-    return StackableLispEnv(env)
+def make_stackable_env(env, name='(no name)'):
+    new_env = StackableLispEnv(env)
+    new_env.name = name
+    return new_env
 
 def _get_basic_env():
     global basic_env
@@ -258,11 +283,11 @@ def _get_basic_env():
         basic_env = LispEnv({}, _basic_env)
     return basic_env
 def get_basic_env():
-    return make_stackable_env(_get_basic_env())
+    return make_stackable_env(_get_basic_env(), 'basic')
 
 def build_simple_env():
     base_env = LispEnv({}, _get_basic_env())
-    env = make_stackable_env(base_env)
+    env = make_stackable_env(base_env, 'simple')
     core_file_name = 'core.pyl'
     core_reader = FileReader(core_file_name)
     exprs = []
@@ -270,15 +295,12 @@ def build_simple_env():
         exprs.append(expr)
     expr = SExpr((Symbol("progn"), SExpr(exprs)))
     lisp_eval(expr, env, LispEnv({}))
-    return base_env
+    return env
 def get_simple_env():
     global _simple_env
-    global simple_env
-    if simple_env is None:
-        if _simple_env is None:
-            _simple_env = build_simple_env()
-        simple_env = LispEnv({}, _simple_env)
-    return make_stackable_env(simple_env)
+    if _simple_env is None:
+        _simple_env = build_simple_env()
+    return _simple_env
 
 def resolve_def(var, env1, env2):
     try:
@@ -291,6 +313,14 @@ def resolve_def(var, env1, env2):
 
 # The Reader
 
+class UnquoteWrapper(object):
+    def __init__(self, content):
+        self.content = content
+
+def normality_(x):
+    assert type(x) is not UnquoteWrapper, x
+    return x
+
 class Reader(object):
     """The default Reader implementation. Reads input with Python's `raw_input`
     method.
@@ -299,7 +329,7 @@ class Reader(object):
     _nl_expr = re.compile(r"[\n\r]")
     _ws_expr = re.compile(r"[\t\n\r, ]")
     _debug = True
-    symbol_start_chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_+-/*!?$&^~#='
+    symbol_start_chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_+-/*!?$&^#='
     digits = '0123456789'
     symbol_chars = digits
 
@@ -369,7 +399,7 @@ class Reader(object):
         self._drop_ws()
         return self.get_char()
 
-    def get_expr(self):
+    def get_expr(self, return_func=normality_):
         """Reads a form and returns one full s-expression. An s-expression may be:
         0. A reader macro. These produce more complex lisp forms.
         1. A Symbol
@@ -385,13 +415,21 @@ class Reader(object):
         # 0. Reader macros
         # 0.1 '-quoting.
         if c == "'":
-            quoted_expr = self.get_expr()
-            return SExpr((Symbol('quote'), quoted_expr))
-        # 0.2 `,-quoting. (backtick)
+            quoted_expr = self.get_expr(return_func=return_func)
+            return return_func(SExpr((Symbol('quote'), quoted_expr)))
+        # 0.2.a `()-quoting. (backtick)
         if c == "`":
             # TODO: Implement this quoting mechanism:
-            # In "`(+ 1 2 ~a)" everything is quoted but a.
-            raise NotImplementedError
+            # In "`(+ x 1 ~a)" everything is quoted but 'a'.
+            def quote_(expr):
+                if type(expr) is UnquoteWrapper:
+                    return expr.content
+                else:
+                    return expr
+            return self.get_expr(return_func=quote_)
+        # 0.2.b `,-quoting's ~unquote mechanism
+        if c == "~":
+            return return_func(UnquoteWrapper(self.get_expr(return_func=normality_)))
         # 0.3 #-macros
         if c == '#':
             raise ReaderError, "No such macro"
@@ -403,7 +441,7 @@ class Reader(object):
                 sym += c
                 self.get_char()
                 c = self.peek_char()
-            return Symbol(sym)
+            return return_func(Symbol(sym))
         # 2. A number
         if c in self.digits:
             n = c
@@ -414,8 +452,8 @@ class Reader(object):
                 n += self.get_char()
                 while self.peek_char() and self.peek_char() in self.digits:
                     n += self.get_char()
-                return float(n)
-            return int(n)
+                return return_func(float(n))
+            return return_func(int(n))
         # 3. A string
         if c == '"':
             s = self._read_until('"')
@@ -431,11 +469,11 @@ class Reader(object):
             s = s.replace('\\r', '\r')
             s = s.replace('\\"', '"')
             s = s.replace('\\\\', '\\')
-            return s
+            return return_func(s)
         # 4. Comment
         if c == ';':
             self._drop_until_newline()
-            return None
+            return return_func(None)
         nested_expr_params = None
         # 5. A sequence
         if c == '[':
@@ -449,11 +487,11 @@ class Reader(object):
             self._drop_ws()
             s_expr = []
             while self.peek_char() and self.peek_char() != closing_char:
-                s_expr.append(self.get_expr())
+                s_expr.append(self.get_expr(return_func=return_func))
                 self._drop_ws()
             # consume the closing char
             self.get_char()
-            return expr_class(s_expr)
+            return return_func(expr_class(s_expr))
         # Something unexpected
         raise ReaderError("Unexpected form", c, self._last_form, self._buffer)
 
@@ -584,18 +622,18 @@ def lisp_eval(expr, env=None, private_env=None):
                 bindings = bindings[2:]
             body = SExpr((Symbol("progn"), ) + body)
             return lisp_eval(body, env, new_private_env)
-        elif f == 'binding':
+        elif f == 'binding*':
             bindings = r[0]
             body = r[1:]
             assert isinstance(bindings, Sequence)
             new_bindings = {}
             while bindings:
                 name = bindings[0]
+                assert type(name) is Symbol, name
                 expr = bindings[1]
                 new_bindings[name] = lisp_eval(expr, env, private_env)
                 bindings = bindings[2:]
             new_env = env.new_scope(new_bindings)
-            body = SExpr((Symbol("progn"), ) + body)
             try:
                 env.push(new_env)
                 return lisp_eval(body, env, private_env)
@@ -605,7 +643,7 @@ def lisp_eval(expr, env=None, private_env=None):
             # If not a special form, then treat this as a function.
             # Evaluate the first form and keep it as the function object.
             func = lisp_eval(f, env, private_env)
-            assert callable(func), (func, f)
+            assert callable(func), (func, f, expr)
             args = r
             macro = hasattr(func, '_lisp_macro')
             if not macro:

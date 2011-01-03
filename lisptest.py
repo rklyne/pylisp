@@ -87,6 +87,9 @@ class ReaderTest(LispTest):
         else:
             self.fail("Expected a lisp.ReaderError")
 
+    def test_quoting(self):
+        self.assertExpr("`(a b c)", ('a', 'b', 'c'))
+
 class EvalTest(LispTest):
     def test_addition(self):
         self.assertEval("(+ 3 4)", 7)
@@ -132,6 +135,8 @@ class EvalTest(LispTest):
         self.get_eval(code)
         self.assertEval("(when7 7 2)", 2)
         self.assertEval("(when7 3 2)", None)
+        self.assertEval("(when7 (+ 3 4) 2)", 2)
+        self.assertEval("(when7 '(+ 3 4) 2)", None)
 
     def test_let(self):
         self.get_eval("(def a 1)")
@@ -208,8 +213,25 @@ class EnvTest(LispTest):
 
         env = lisp.make_stackable_env(env)
         env.define(sym_b, 2)
-        self.assertEqual(env.lookup(sym_a), 1)
-        self.assertEqual(env.lookup(sym_b), 2)
+        def assert_ab(a, b):
+            self.assertEqual(env.lookup(sym_a), a)
+            self.assertEqual(env.lookup(sym_b), b)
+        assert_ab(1, 2)
+
+        new_env = {
+            sym_a: 3,
+        }
+        new_env = env.new_scope(new_env)
+        assert_ab(1, 2)
+        try:
+            env.push(new_env)
+            assert_ab(3, 2)
+            env.define(sym_b, 4)
+            assert_ab(3, 4)
+        finally:
+            env.pop()
+
+        assert_ab(1, 2)
 
 class ScopeTest(LispTest):
     def test_fn_scope(self):
@@ -235,6 +257,10 @@ class ScopeTest(LispTest):
         self.get_eval("(defn g [x] (let [a 2] (+ x (h a))))")
         self.get_eval("(defn h [x] (+ x a))")
         self.assertEval("(g 10)", 13)
+
+    def test_binding_as_let(self):
+        self.get_eval("(def a 1)")
+        self.assertEval("(binding [a 2] a)", 2)
 
     def test_binding(self):
         self.get_eval("(def a 1)")
