@@ -30,7 +30,11 @@ class Symbol(str):
     def __str__(self):
         return "<Symbol: %s>" % super(Symbol, self).__str__()
 
+# Well known symbols
+QUOTE_SYMBOL = Symbol('quote')
+
 # enivronment
+integrated_mode = False
 class LispEnv(dict):
     def __init__(self, mapping, parent=None):
         super(LispEnv, self).__init__(mapping)
@@ -123,6 +127,7 @@ class LispFunc(object):
     def __init__(self, bindings, exprs, env, local_env):
         assert isinstance(env, StackableLispEnv), env
         assert type(bindings) is Sequence, bindings
+        self.integrated_mode = integrated_mode
         self.expr = SExpr((Symbol("progn"), ) + exprs)
         exact_bindings = bindings
         if bindings and bindings[-1][0] == '&':
@@ -146,7 +151,9 @@ class LispFunc(object):
         elif args or kwargs_in:
             raise LispError("Too many params to function", self, args_in, kwargs_in)
         env = get_thread_env()
-        if self.def_env is not env:
+        if self.integrated_mode:
+            env = self.def_env
+        elif self.def_env is not env:
             raise LispCallError("Data from another Lisp", env)
         ret = lisp_eval(self.expr, env, self.def_local_env)
         return ret
@@ -210,7 +217,10 @@ def build_basic_env():
         return seq[1:]
 
     def cons(el, seq):
-        return Sequence((el,)) + seq
+        s0 = Sequence((el,))
+        if seq is None:
+            return s0
+        return s0 + seq
 
 # IO functions
     def print_func(*args):
@@ -228,6 +238,12 @@ def build_basic_env():
     def lisp_eval_(code):
         return lisp_eval(code)
 
+    import random
+    def rand_int(a, b=None):
+        if b is None:
+            return random.randint(1, a)
+        return random.randint(a, b)
+
 # Boolean logic functions
     def equals(a, b):
         return a == b
@@ -235,6 +251,10 @@ def build_basic_env():
         return not a
 
 # The environment, with Lisp names.
+    builtin_dict = __builtins__
+    if not isinstance(builtin_dict, dict):
+        builtin_dict = builtin_dict.__dict__
+    builtin_env = LispEnv(builtin_dict)
     env = LispEnv({
         't': True,
         '+': plus,
@@ -254,7 +274,8 @@ def build_basic_env():
         '=': equals,
         'not': not_,
         'eval': lisp_eval_,
-    })
+        'randint': rand_int,
+    }, builtin_env)
 
     return env
 
@@ -416,7 +437,7 @@ class Reader(object):
         # 0.1 '-quoting.
         if c == "'":
             quoted_expr = self.get_expr(return_func=return_func)
-            return return_func(SExpr((Symbol('quote'), quoted_expr)))
+            return return_func(SExpr((QUOTE_SYMBOL, quoted_expr)))
         # 0.2.a `()-quoting. (backtick)
         if c == "`":
             # In "`(+ x 1 ~a)" everything is quoted but 'a'.
@@ -537,6 +558,14 @@ class StringReader(Reader):
 # The Evaluator (the main bit)
 # TODO: Build a dictionary of symbols to lambdas to handle special forms quickly.
 
+_passthrough_expr_types = dict.fromkeys([
+    int,
+    float,
+    str,
+    unicode,
+    bool,
+])
+
 def lisp_eval(expr, env=None, private_env=None):
     """PyLisp Evaluator.
     Reserved words:
@@ -549,7 +578,7 @@ def lisp_eval(expr, env=None, private_env=None):
     * if
     * fn
     * let
-    * binding
+    * binding*
     """
     if env is None:
         env = get_simple_env()
@@ -562,8 +591,6 @@ def lisp_eval(expr, env=None, private_env=None):
         if   expr == 'nil': return None
         elif expr == 't': return True
         else: return resolve_def(expr, local_env, env)
-    elif type_e is int: return expr
-    elif type_e is float: return expr
     elif isinstance(expr, tuple):
         if len(expr) == 0:
             # Lisp "()" == Lisp "nil"
@@ -593,7 +620,7 @@ def lisp_eval(expr, env=None, private_env=None):
                 ret = lisp_eval(r[0], env, private_env)
                 r = r[1:]
             return ret
-        elif f == 'quote':
+        elif f == QUOTE_SYMBOL:
             assert len(r) == 1, expr
             return r[0]
         elif f == 'fn':
@@ -652,10 +679,79 @@ def lisp_eval(expr, env=None, private_env=None):
             else:
                 ret = lisp_apply(func, args, env)
                 return lisp_eval(ret, env, private_env)
+    elif type_e in _passthrough_expr_types: return expr
+    elif callable(expr):
+        return expr
+    # TODO: Maybe some instanceof checks here?
     else:
         raise LispRuntimeError("Cannot evaluate this expression.", expr)
 
 run = lisp_eval
+
+class Lisp(object):
+    """An encapsulation of Python/Lisp integration.
+    """
+    def __init__(self):
+        self._env = get_simple_env()
+        self._local_env = LispEnv({})
+        class StringWrap(object):
+            def __init__(self, s):
+                self.value = s
+        self.string = StringWrap
+
+    def _eval(self, s):
+        return lisp_eval(s, self._env, self._local_env)
+
+    def _S(self, thing):
+        t = type(thing)
+        if t is tuple:
+            return self.SExpr(*thing)
+        if t is Sequence:
+            return Sequence(*map(self.SExpr, thing))
+        if t is self.string:
+            return thing.value
+        if t is str:
+            return self.sym(thing)
+        return thing
+    #    return Q(thing)
+
+    def SExpr(self, *tpl):
+        """Recursively convert a tuple to an s-expression.
+        """
+        return SExpr(map(self._S, tpl))
+
+    def E(self, *tpl):
+        global integrated_mode
+        try:
+            # TODO: make this thread safe
+            integrated_mode = True
+            expr = self.SExpr(*tpl)
+            return self._eval(expr)
+        finally:
+            integrated_mode = False
+
+    def Q(self, expr):
+        return SExpr((QUOTE_SYMBOL, expr))
+
+    def sym(self, sym_name):
+        return Symbol(sym_name)
+
+    def R(self, sym_name):
+        return self._eval(self.sym(sym_name))
+
+    F = E
+
+    __all__ = [
+        'F',
+        'E',
+        'S',
+        'Q',
+        'R',
+        'lisp_eval',
+    ]
+
+    __call__ = E
+
 
 def repl(debug=False, env=None):
     """REPL:
@@ -665,7 +761,7 @@ def repl(debug=False, env=None):
     * L oop."""
     reader = Reader()
     if env is None:
-        env = get_default_env()
+        env = get_simple_env()
     try:
         while True:
             try:

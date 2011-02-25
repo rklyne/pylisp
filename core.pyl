@@ -2,6 +2,13 @@
 (defmacro when [test, &body]
   (list 'if test (cons 'progn body)))
 
+(defmacro repeatedly [n body]
+  (list 'if (list '= n '0) '[]
+    (list 'cons
+      (list 'eval body)
+      (list 'repeatedly (list '- n '1) body)
+    )))
+
 
 (defmacro defn [name bindings &body]
   (list 'def name

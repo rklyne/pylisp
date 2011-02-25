@@ -124,6 +124,10 @@ class EvalTest(LispTest):
         self.assertEval("(if nil 2 3)", 3)
         self.assertEval("(if nil 2)", None)
 
+    def test_string(self):
+        self.assertEval('"hi"', "hi")
+        self.assertEval('(if t "yes" "no")', "yes")
+
     def test_defmacro(self):
         """Test defining macros"""
 
@@ -196,6 +200,11 @@ class EnvTest(LispTest):
         for key in self.basic_env_keys:
             self.assert_(env.has_key(key), msg="Expected basic env to have key '%s'" % key)
             self.assertNotEqual(env.lookup(key), None)
+
+    def test_builtin_env(self):
+        env = lisp.get_basic_env()
+        for key in __builtins__.__dict__:
+            self.assert_(env.has_key(key))
 
     def test_simple_env(self):
         env = lisp.get_simple_env()
@@ -272,6 +281,61 @@ class ScopeTest(LispTest):
         self.get_eval("(defn g [x] (binding [a 2] (+ x (h a))))")
         self.get_eval("(defn h [x] (+ x a))")
         self.assertEval("(g 10)", 14)
+
+L = lisp.Lisp()
+class IntegrationTest(unittest.TestCase):
+    def test_Q(self):
+        q = L.Q(3)
+        assert type(q) is lisp.SExpr
+        assert q[1] == 3
+        assert q[0] == lisp.QUOTE_SYMBOL
+
+    def test_S(self):
+        assert L.SExpr(2) == (2, )
+        assert L.SExpr(2, 3) == (2, 3, )
+        assert L.SExpr(2, ('+', 3, 5)) == (2, (L.sym('+'), 3, 5), )
+
+        plus = L.R('+')
+        assert L.SExpr(2, (plus, 3, 5)) == (2, (L.R('+'), 3, 5), )
+
+    def test_E(self):
+        plus = lambda x, y: x + y
+        assert L.E(plus, 3, 5) == 8
+
+    def test_R(self):
+        plus = L.R('+')
+        assert callable(plus), plus
+        result = plus(2, 3)
+        assert result == 5, result
+
+    def test_def(self):
+        L('def', 'C', 5)
+        assert L.R('C') == 5
+
+    def test_fn(self):
+        f = L.E('fn', lisp.Sequence(['a']), (L.R('+'), 'a', 1))
+        assert callable(f), f
+        assert f(3) == 4, f
+
+    def test_recursion(self):
+        def decrement(num):
+            return num - 1
+        g = L.E('defn', 'fact', lisp.Sequence(['a']),
+            ('if', ('=', 'a', 0),
+                1,
+                ('*', 'a', ('fact', (decrement, 'a'))),
+            )
+        )
+
+        assert g(0) == 1
+        assert g(5) == (5*4*3*2)
+
+    def test_strings(self):
+        yes_val = 'yes'
+        no_val = 'no'
+        fn = L.E('fn', lisp.Sequence(['a']), ('if', 'a', L.string(yes_val), L.string(no_val) ))
+        assert fn(True) == yes_val
+        assert fn(False) == no_val
 
 if __name__ == '__main__':
     unittest.main()
