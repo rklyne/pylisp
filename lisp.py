@@ -35,6 +35,12 @@ QUOTE_SYMBOL = Symbol('quote')
 
 # enivronment
 integrated_mode = False
+def start_integrated_mode():
+    global integrated_mode
+    integrated_mode = True
+def stop_integrated_mode():
+    global integrated_mode
+    integrated_mode = False
 class LispEnv(dict):
     def __init__(self, mapping, parent=None):
         super(LispEnv, self).__init__(mapping)
@@ -126,8 +132,11 @@ class LispFunc(object):
     """
     def __init__(self, bindings, exprs, env, local_env):
         assert isinstance(env, StackableLispEnv), env
-        assert type(bindings) is Sequence, bindings
         self.integrated_mode = integrated_mode
+        if not self.integrated_mode:
+            assert type(bindings) is Sequence, bindings
+        else:
+            bindings = Sequence(bindings)
         self.expr = SExpr((Symbol("progn"), ) + exprs)
         exact_bindings = bindings
         if bindings and bindings[-1][0] == '&':
@@ -150,12 +159,19 @@ class LispFunc(object):
             self.def_local_env[self.extra_bindings] = args
         elif args or kwargs_in:
             raise LispError("Too many params to function", self, args_in, kwargs_in)
-        env = get_thread_env()
         if self.integrated_mode:
             env = self.def_env
-        elif self.def_env is not env:
-            raise LispCallError("Data from another Lisp", env)
-        ret = lisp_eval(self.expr, env, self.def_local_env)
+        else:
+            env = get_thread_env()
+            if self.def_env is not env:
+                raise LispCallError("Data from another Lisp", env)
+        if self.integrated_mode:
+            start_integrated_mode()
+        try:
+            ret = lisp_eval(self.expr, env, self.def_local_env)
+        finally:
+            if self.integrated_mode:
+                stop_integrated_mode()
         return ret
 
 _thread_envs = {}
@@ -715,6 +731,9 @@ class Lisp(object):
         return thing
     #    return Q(thing)
 
+    def Seq(self, *tpl):
+        return Sequence(tpl)
+
     def SExpr(self, *tpl):
         """Recursively convert a tuple to an s-expression.
         """
@@ -724,11 +743,11 @@ class Lisp(object):
         global integrated_mode
         try:
             # TODO: make this thread safe
-            integrated_mode = True
+            start_integrated_mode()
             expr = self.SExpr(*tpl)
             return self._eval(expr)
         finally:
-            integrated_mode = False
+            stop_integrated_mode()
 
     def Q(self, expr):
         return SExpr((QUOTE_SYMBOL, expr))

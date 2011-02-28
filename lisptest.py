@@ -317,6 +317,11 @@ class IntegrationTest(unittest.TestCase):
         assert callable(f), f
         assert f(3) == 4, f
 
+    def test_defn(self):
+        f = L.E('defn', 'f', [], 2)
+        L.E('defn', 'g', [], ('+', (f,), 3))
+        assert L.E('g') == 5
+
     def test_recursion(self):
         def decrement(num):
             return num - 1
