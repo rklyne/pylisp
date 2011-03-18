@@ -2,6 +2,7 @@
 (defmacro when [test, &body]
   (list 'if test (cons 'progn body)))
 
+
 (defmacro repeatedly [n body]
   (list 'if (list '= n '0) '[]
     (list 'cons
@@ -12,14 +13,49 @@
 
 (defmacro defn [name bindings &body]
   (list 'def name
-    (cons 'fn (cons bindings body))))
+    (cons 'fn 
+      (let [return (cons bindings body)]
+        (. return "name" name)
+        return
+    ))))
+
 
 ; builtin binding* only takes a single expr. "binding" will 'progn them.
 (defmacro binding [bindings &exprs]
   (cons 'binding* (cons bindings (cons 'progn exprs))))
 
+
 ; Same for 'let*' and 'let'
 (defmacro let [bindings &exprs]
   (cons 'let* (cons bindings (cons 'progn exprs))))
 
+(let [and_ (fn [thing &body]
+  `(if (not ~thing) nil ~(apply and body)))]
+   (defmacro and [&body]
+    (if (= body ()) t (apply and_ body)))
+)
+(let [or_ (fn [thing &body]
+  `(if ~thing t ~(apply or body)))]
+   (defmacro or [&body]
+    (if (= body ()) nil (apply or_ body)))
+)
+ 
+;(defmacro or [thing &body]
+;  (if thing t (if (= body ()) nil (apply or body)) ))
+
+
+(defn flatten [lst]
+  (if (list? lst)
+    (let [flat(fn [l]
+      (if (= l ())
+        l
+        (if (list? (head l))
+          (flat (concat (head l) (tail l)))
+          (cons (head l) (flat (tail l)))
+          )))
+      ]
+      (flat lst)
+    )
+    (list lst)
+    ))
 
