@@ -19,12 +19,35 @@ class LispRuntimeError(RuntimeError): pass
 class ReaderError(LispError): pass
 class ExpressionEvalError(LispError): pass
 class LookupError(LispError): pass
+class LispStackTrace(LispError):
+    def __init__(self, exc):
+        self.exc = exc.__class__.__name__ + ": " + str(exc)
+        self.stack = []
 
+    def add_trace(self, *tpl):
+        self.stack.append(tpl)
+
+    def __str__(self):
+        lines = ['%s%r' % (func, args, ) for func, args, kw_args in self.stack]
+        lines.reverse()
+        lines.append(str(self.exc))
+        return '\n'.join(lines)
 
 # s-expression type
 # TODO: Make s-expressions look like linked lists
 class SExpr(tuple): pass
 class Sequence(tuple): pass
+
+class UnquoteWrapper(object):
+    def __init__(self, content):
+        self.content = content
+class QuoteWrapper(object):
+    def __init__(self, content):
+        self.content = content
+    def __eq__(self, other):
+        if isinstance(other, QuoteWrapper):
+            return self.content == other.content
+        return self is other
 
 class Symbol(str):
     def __str__(self):
@@ -165,14 +188,30 @@ class LispFunc(object):
             env = get_thread_env()
             if self.def_env is not env:
                 raise LispCallError("Data from another Lisp", env)
+        im = integrated_mode
         if self.integrated_mode:
             start_integrated_mode()
         try:
-            ret = lisp_eval(self.expr, env, self.def_local_env)
+            try:
+                try:
+                    ret = lisp_eval(self.expr, env, self.def_local_env)
+                except LispStackTrace: raise
+                except LispError: raise
+                except Exception, e:
+                    import sys
+                    raise LispStackTrace, e, sys.exc_info()[2]
+            except LispStackTrace, st:
+                st.add_trace(self, args_in, env)
+                raise
         finally:
-            if self.integrated_mode:
+            if not im and self.integrated_mode:
                 stop_integrated_mode()
         return ret
+
+    def __str__(self):
+        if hasattr(self, 'name'):
+            return self.name
+        return "<anonymous>"
 
 _thread_envs = {}
 def get_thread_env():
@@ -233,16 +272,29 @@ def build_basic_env():
         return seq[1:]
 
     def cons(el, seq):
-        s0 = Sequence((el,))
+        klass = SExpr
+        if isinstance(seq, Sequence):
+            klass = Sequence
         if seq is None:
-            return s0
-        return s0 + seq
+            return klass((el,))
+        return klass((el,) + seq)
+
+    def concat(*tpl):
+        r = ()
+        for x in tpl:
+            r = r + x
+        return SExpr(r)
 
 # IO functions
     def print_func(*args):
         for arg in args:
             print arg,
         print
+
+    def println(*args):
+        for arg in args:
+            print arg,
+        print ""
 
 # System functions
     def assert_func(truth, message=_no_value):
@@ -253,6 +305,14 @@ def build_basic_env():
 
     def lisp_eval_(code):
         return lisp_eval(code)
+
+    def read_str(code_string):
+        reader = StringReader(code_string)
+        expr = reader.get_expr()
+        return expr
+    def eval_str(code_string):
+        expr = read_str(code_string)
+        return lisp_eval(expr)
 
     import random
     def rand_int(a, b=None):
@@ -266,6 +326,12 @@ def build_basic_env():
     def not_(a):
         return not a
 
+# Type checking functions
+    def is_integer(x):
+        return isinstance(x, int)
+    def is_sexpr(x):
+        return isinstance(x, SExpr)
+
 # The environment, with Lisp names.
     builtin_dict = __builtins__
     if not isinstance(builtin_dict, dict):
@@ -278,7 +344,10 @@ def build_basic_env():
         '*': times,
         '/': divide,
         'print': print_func,
+        'println': println,
         'str': string,
+        'integer?': is_integer,
+        'list?': is_sexpr,
         'assert': assert_func,
         'apply': apply,
         'list': list_,
@@ -286,11 +355,15 @@ def build_basic_env():
         'head': head,
         'tail': tail,
         'cons': cons,
+        'concat': concat,
         'eq': equals,
         '=': equals,
         'not': not_,
         'eval': lisp_eval_,
+        'eval-str': eval_str,
+        'read-string': read_str,
         'randint': rand_int,
+        'read-line': raw_input,
     }, builtin_env)
 
     return env
@@ -350,23 +423,18 @@ def resolve_def(var, env1, env2):
 
 # The Reader
 
-class UnquoteWrapper(object):
-    def __init__(self, content):
-        self.content = content
-
 def normality_(x):
-    assert type(x) is not UnquoteWrapper, x
     return x
 
 class Reader(object):
     """The default Reader implementation. Reads input with Python's `raw_input`
     method.
     """
-    _prompt = 'Lisp --> '
+    _prompt = 'lisp=>'
     _nl_expr = re.compile(r"[\n\r]")
     _ws_expr = re.compile(r"[\t\n\r, ]")
     _debug = True
-    symbol_start_chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_+-/*!?$&^#='
+    symbol_start_chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_+-/*!?$&^#=.'
     digits = '0123456789'
     symbol_chars = digits
 
@@ -457,12 +525,7 @@ class Reader(object):
         # 0.2.a `()-quoting. (backtick)
         if c == "`":
             # In "`(+ x 1 ~a)" everything is quoted but 'a'.
-            def quote_(expr):
-                if type(expr) is UnquoteWrapper:
-                    return expr.content
-                else:
-                    return expr
-            return self.get_expr(return_func=quote_)
+            return QuoteWrapper(self.get_expr())
         # 0.2.b `,-quoting's ~unquote mechanism
         if c == "~":
             return return_func(UnquoteWrapper(self.get_expr(return_func=normality_)))
@@ -580,9 +643,21 @@ _passthrough_expr_types = dict.fromkeys([
     str,
     unicode,
     bool,
+    Sequence,
 ])
 
 def lisp_eval(expr, env=None, private_env=None):
+    try:
+        return lisp_eval__(expr, env=env, private_env=private_env)
+    except LispStackTrace, lst:
+        if hasattr(lst, 'code'):
+            raise
+        lst.code = expr
+        lst.env = env
+        lst.private_env = private_env
+        raise
+
+def lisp_eval__(expr, env=None, private_env=None):
     """PyLisp Evaluator.
     Reserved words:
     * def
@@ -596,21 +671,43 @@ def lisp_eval(expr, env=None, private_env=None):
     * let
     * binding*
     """
+
     if env is None:
         env = get_simple_env()
     assert type(env) is StackableLispEnv, (type(env), env)
     local_env = LispEnv({}, private_env)
 
+    if expr in [
+        True,
+        False,
+        None,
+    ]:
+        return expr
+
     type_e = type(expr)
+    assert type_e is not UnquoteWrapper, expr
     if type_e is Symbol:
         # 'nil' and 't' can't be overridden.
         if   expr == 'nil': return None
         elif expr == 't': return True
         else: return resolve_def(expr, local_env, env)
-    elif isinstance(expr, tuple):
+    elif type_e is QuoteWrapper:
+        def unquote(qexpr):
+            t = type(qexpr)
+            if t is SExpr:
+                expr_out = []
+                # recursive descent
+                for e in qexpr:
+                    expr_out.append(unquote(e))
+                return SExpr(expr_out)
+            elif t is UnquoteWrapper:
+                return lisp_eval(qexpr.content, env, private_env)
+            else:
+                return qexpr
+        return unquote(expr.content)
+    elif isinstance(expr, SExpr):
         if len(expr) == 0:
-            # Lisp "()" == Lisp "nil"
-            return None
+            return expr
         f, r = expr[0], expr[1:]
         if f == 'def':
             assert len(r) == 2, r
@@ -655,7 +752,7 @@ def lisp_eval(expr, env=None, private_env=None):
                 return lisp_eval(else_body, env, private_env)
         elif f == 'let*':
             bindings = r[0]
-            body = r[1:]
+            body = SExpr(r[1:])
             assert isinstance(bindings, Sequence)
             new_private_env = LispEnv({}, private_env)
             while bindings:
@@ -666,7 +763,7 @@ def lisp_eval(expr, env=None, private_env=None):
             return lisp_eval(body, env, new_private_env)
         elif f == 'binding*':
             bindings = r[0]
-            body = r[1:]
+            body = SExpr(r[1:])
             assert isinstance(bindings, Sequence)
             new_bindings = {}
             while bindings:
@@ -681,6 +778,19 @@ def lisp_eval(expr, env=None, private_env=None):
                 return lisp_eval(body, env, private_env)
             finally:
                 env.pop()
+        elif f == '.':
+            if len(r) == 2:
+                # get
+                obj = lisp_eval(r[0], env, private_env)
+                attr = lisp_eval(r[1], env, private_env)
+                return getattr(obj, attr)
+            else:
+                obj = lisp_eval(r[0], env, private_env)
+                attr = lisp_eval(r[1], env, private_env)
+                value = lisp_eval(r[2], env, private_env)
+                return setattr(obj, attr, value)
+        elif f == '.?':
+            return hasattr(*r)
         else:
             # If not a special form, then treat this as a function.
             # Evaluate the first form and keep it as the function object.
@@ -714,6 +824,10 @@ class Lisp(object):
             def __init__(self, s):
                 self.value = s
         self.string = StringWrap
+        class ListWrap(object):
+            def __init__(self, s):
+                self.value = s
+        self.list = ListWrap
 
     def _eval(self, s):
         return lisp_eval(s, self._env, self._local_env)
@@ -722,17 +836,20 @@ class Lisp(object):
         t = type(thing)
         if t is tuple:
             return self.SExpr(*thing)
-        if t is Sequence:
-            return Sequence(*map(self.SExpr, thing))
+#        if t is Sequence:
+#            return self.Seq(*thing)
+        if t is list:
+            return self.Seq(*thing)
+        if t is self.list:
+            return list(map(self._S, thing))
         if t is self.string:
             return thing.value
         if t is str:
             return self.sym(thing)
         return thing
-    #    return Q(thing)
 
     def Seq(self, *tpl):
-        return Sequence(tpl)
+        return Sequence(map(self._S, tpl))
 
     def SExpr(self, *tpl):
         """Recursively convert a tuple to an s-expression.
@@ -740,7 +857,6 @@ class Lisp(object):
         return SExpr(map(self._S, tpl))
 
     def E(self, *tpl):
-        global integrated_mode
         try:
             # TODO: make this thread safe
             start_integrated_mode()

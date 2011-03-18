@@ -33,6 +33,12 @@ class LispTest(unittest.TestCase):
         result_expr = self.get_eval(text)
         self.assertEqual(result_expr, expr_tuple)
 
+    def assertQuoteEval(self, text, expr_tuple):
+        result_expr = self.get_eval(text)
+        if type(result_expr) is lisp.QuoteWrapper:
+            result_expr = result_expr.content
+        self.assertEqual(result_expr, expr_tuple)
+
 class ReaderTest(LispTest):
     # 1. A Symbol
     def test_symbol(self):
@@ -88,7 +94,7 @@ class ReaderTest(LispTest):
             self.fail("Expected a lisp.ReaderError")
 
     def test_quoting(self):
-        self.assertExpr("`(a b c)", ('a', 'b', 'c'))
+        self.assertQuoteEval("`(a b c)", ('a', 'b', 'c'))
 
 class EvalTest(LispTest):
     def test_addition(self):
@@ -97,6 +103,12 @@ class EvalTest(LispTest):
     def test_quote(self):
         self.assertEval("(quote a)", "a")
         self.assertEval("'a", "a")
+        self.assertEval("'(2 3 4)", (2, 3, 4))
+        self.assertEval("'(2 3 (4))", (2, 3, (4, )))
+        self.assertQuoteEval("`(1 ~2)", (1, 2))
+        self.assertQuoteEval("`(1 ~(+ 3 2))", (1, 5))
+        self.assertQuoteEval("`(1 ~(+ 3 2) ~(+ 3 2) ~(+ 3 2))", (1, 5, 5, 5))
+        self.assertQuoteEval("`(1 (2 ~(+ 3 2)))", (1, (2, 5)))
 
     def test_truth(self):
         self.assertEval("t", True)
@@ -123,6 +135,10 @@ class EvalTest(LispTest):
         self.assertEval("(if t 2 3)", 2)
         self.assertEval("(if nil 2 3)", 3)
         self.assertEval("(if nil 2)", None)
+
+    def test_if_non_eval(self):
+        self.get_eval("(def x 2)")
+        self.assertEval("(if nil y x)", 2)
 
     def test_string(self):
         self.assertEval('"hi"', "hi")
@@ -154,9 +170,49 @@ class EvalTest(LispTest):
         self.assertEval("(factorial 4)", 24)
 
     def test_special_cases(self):
-        self.assertEval("()", None)
+        self.assertEval("()", ())
         self.assertEval("nil", None)
         self.assertEval("t", True)
+
+    def test_eval_str(self):
+        self.assertEval("(eval-str \"(+ 2 3)\")", 5)
+        self.get_eval("(def x 1)")
+        self.assertEval("(eval-str \"(+ x 3)\")", 4)
+
+    def test_head_tail(self):
+        self.assertEval("(head '(2 3))", 2)
+        self.assertEval("(head '(() 3))", ())
+        self.assertEval("(tail '(2 3))", (3, ))
+        self.assertEval("(tail '(() 3))", (3, ))
+        self.assertEval("(tail '(2 (3)))", ((3, ), ))
+
+    def test_concat(self):
+        self.assertEval("(concat '(2 3) '(4 5))", (2, 3, 4, 5))
+
+    def test_flatten(self):
+        self.assertEval("(flatten '(4 5))", (4, 5))
+        self.assertEval("(flatten '((4 5)))", (4, 5))
+        self.assertEval("(flatten '(2 3 (4 5)))", (2, 3, 4, 5))
+        self.assertEval("(flatten '(2 3 (4 5) 6))", (2, 3, 4, 5, 6))
+        self.assertEval("(flatten '((2 3) (4 5)))", (2, 3, 4, 5))
+
+    def test_dot(self):
+        l = lisp.Lisp()
+        class C(object): pass
+        o = C()
+        o.x = 1
+        l.E('.', l.Q(o), l.string("x"), 2)
+        self.assert_(o.x == 2)
+
+    def test_bool(self):
+        self.assertEval("(and 1 1 1 1)", True)
+        self.assertEval("(and 1 1 1 1 0)", None)
+        self.assertEval("(and 1 1 ())", None)
+        self.assertEval("(and 1 1 '(a))", True)
+        self.assertEval("(and 0 x)", None)
+        self.assertEval("(or 0 0 0 0)", None)
+        self.assertEval("(or 0 0 0 0 1)", True)
+        self.assertEval("(or 1 x)", True)
 
 class EnvTest(LispTest):
     basic_env_keys = [
@@ -313,19 +369,22 @@ class IntegrationTest(unittest.TestCase):
         assert L.R('C') == 5
 
     def test_fn(self):
-        f = L.E('fn', lisp.Sequence(['a']), (L.R('+'), 'a', 1))
+        f = L.E('fn', ['a'], (L.R('+'), 'a', 1))
         assert callable(f), f
         assert f(3) == 4, f
 
     def test_defn(self):
         f = L.E('defn', 'f', [], 2)
-        L.E('defn', 'g', [], ('+', (f,), 3))
+        g = L.E('defn', 'g', [], ('+', (f,), 3))
         assert L.E('g') == 5
+        assert g() == 5
+        h = L.E('defn', 'h', ['a'], ('+', ('f',), 'a'))
+        assert h(6) == 8
 
     def test_recursion(self):
         def decrement(num):
             return num - 1
-        g = L.E('defn', 'fact', lisp.Sequence(['a']),
+        g = L.E('defn', 'fact', ['a'],
             ('if', ('=', 'a', 0),
                 1,
                 ('*', 'a', ('fact', (decrement, 'a'))),
@@ -338,7 +397,7 @@ class IntegrationTest(unittest.TestCase):
     def test_strings(self):
         yes_val = 'yes'
         no_val = 'no'
-        fn = L.E('fn', lisp.Sequence(['a']), ('if', 'a', L.string(yes_val), L.string(no_val) ))
+        fn = L.E('fn', ['a'], ('if', 'a', L.string(yes_val), L.string(no_val) ))
         assert fn(True) == yes_val
         assert fn(False) == no_val
 
