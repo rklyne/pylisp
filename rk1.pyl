@@ -22,3 +22,12 @@
 (print (g 8))
 
 
+
+(defmacro withlock [lock &code]
+  (list
+    'progn
+    '(. lock acquire)
+    (cons 'progn (list 'binding '[name raise-error] code))
+    '(. lock release)
+  )) 
+

@@ -657,6 +657,118 @@ def lisp_eval(expr, env=None, private_env=None):
         lst.private_env = private_env
         raise
 
+#####################
+# Special forms
+##########
+
+def _sf_def(r, env, private_env):
+    name = r[0]
+    assert type(name) is Symbol, name
+    sub_expr = r[1]
+    value = lisp_eval(sub_expr, env, private_env)
+    env.define(name, value)
+    assert env.has_key(name), env._flatten()
+    return value
+
+def _sf_defmacro(r, env, private_env):
+    assert len(r) >= 3, r
+    name = r[0]
+    # A new LispMacro, with bindings and an expression body
+    bindings = r[1]
+    exprs = r[2:]
+    value = LispMacro(bindings, exprs, env, private_env)
+    env.define(name, value)
+    return value
+
+def _sf_progn(r, env, private_env):
+    ret = None
+    while r:
+        ret = lisp_eval(r[0], env, private_env)
+        r = r[1:]
+    return ret
+
+def _sf_fn(r, env, private_env):
+    assert len(r) >= 2, r
+    # A new LispFunc, with bindings and an expression body
+    return LispFunc(r[0], r[1:], env, private_env)
+
+def _sf_quote(r, env, private_env):
+    assert len(r) == 1, expr
+    return r[0]
+
+def _sf_if(r, env, private_env):
+    else_body = None
+    if len(r) == 3:
+        else_body = r[2]
+    test = r[0]
+    body = r[1]
+    if lisp_eval(test, env, private_env):
+        return lisp_eval(body, env, private_env)
+    elif else_body is not None:
+        return lisp_eval(else_body, env, private_env)
+
+def _sf_let(r, env, private_env):
+    bindings = r[0]
+    body = SExpr(r[1:])
+    assert isinstance(bindings, Sequence)
+    new_private_env = LispEnv({}, private_env)
+    while bindings:
+        name = bindings[0]
+        expr = bindings[1]
+        new_private_env[name] = lisp_eval(expr, env, new_private_env)
+        bindings = bindings[2:]
+    return lisp_eval(body, env, new_private_env)
+
+def _sf_binding(r, env, private_env):
+    bindings = r[0]
+    body = SExpr(r[1:])
+    assert isinstance(bindings, Sequence)
+    new_bindings = {}
+    while bindings:
+        name = bindings[0]
+        assert type(name) is Symbol, name
+        expr = bindings[1]
+        new_bindings[name] = lisp_eval(expr, env, private_env)
+        bindings = bindings[2:]
+    new_env = env.new_scope(new_bindings)
+    try:
+        env.push(new_env)
+        return lisp_eval(body, env, private_env)
+    finally:
+        env.pop()
+
+def _sf_dot(r, env, private_env):
+    if len(r) == 2:
+        # get
+        obj = lisp_eval(r[0], env, private_env)
+        attr = lisp_eval(r[1], env, private_env)
+        return getattr(obj, attr)
+    else:
+        obj = lisp_eval(r[0], env, private_env)
+        attr = lisp_eval(r[1], env, private_env)
+        value = lisp_eval(r[2], env, private_env)
+        return setattr(obj, attr, value)
+def _sf_hasdot(r, env, private_env):
+    return hasattr(*r)
+
+#################
+# Special form dictionary
+# A performance trick
+######
+
+_sf_dict = {
+    'def': _sf_def,
+    'defmacro': _sf_defmacro,
+    'progn': _sf_progn,
+    'fn': _sf_fn,
+    QUOTE_SYMBOL: _sf_quote,
+    'if': _sf_if,
+    'let*': _sf_let,
+    'binding*': _sf_binding,
+    '.': _sf_dot,
+    '.?': _sf_hasdot,
+}
+
 def lisp_eval__(expr, env=None, private_env=None):
     """PyLisp Evaluator.
     Reserved words:
@@ -691,106 +803,13 @@ def lisp_eval__(expr, env=None, private_env=None):
         if   expr == 'nil': return None
         elif expr == 't': return True
         else: return resolve_def(expr, local_env, env)
-    elif type_e is QuoteWrapper:
-        def unquote(qexpr):
-            t = type(qexpr)
-            if t is SExpr:
-                expr_out = []
-                # recursive descent
-                for e in qexpr:
-                    expr_out.append(unquote(e))
-                return SExpr(expr_out)
-            elif t is UnquoteWrapper:
-                return lisp_eval(qexpr.content, env, private_env)
-            else:
-                return qexpr
-        return unquote(expr.content)
     elif isinstance(expr, SExpr):
         if len(expr) == 0:
             return expr
         f, r = expr[0], expr[1:]
-        if f == 'def':
-            assert len(r) == 2, r
-            name = r[0]
-            assert type(name) is Symbol, name
-            expr = r[1]
-            value = lisp_eval(expr, env, private_env)
-            env.define(name, value)
-            assert env.has_key(name), env._flatten()
-            return value
-        elif f == 'defmacro':
-            assert len(r) >= 3, r
-            name = r[0]
-            # A new LispMacro, with bindings and an expression body
-            bindings = r[1]
-            exprs = r[2:]
-            value = LispMacro(bindings, exprs, env, private_env)
-            env.define(name, value)
-            return value
-        elif f == 'progn':
-            ret = None
-            while r:
-                ret = lisp_eval(r[0], env, private_env)
-                r = r[1:]
-            return ret
-        elif f == QUOTE_SYMBOL:
-            assert len(r) == 1, expr
-            return r[0]
-        elif f == 'fn':
-            assert len(r) >= 2, r
-            # A new LispFunc, with bindings and an expression body
-            return LispFunc(r[0], r[1:], env, private_env)
-        elif f == 'if':
-            else_body = None
-            if len(r) == 3:
-                else_body = r[2]
-            test = r[0]
-            body = r[1]
-            if lisp_eval(test, env, private_env):
-                return lisp_eval(body, env, private_env)
-            elif else_body is not None:
-                return lisp_eval(else_body, env, private_env)
-        elif f == 'let*':
-            bindings = r[0]
-            body = SExpr(r[1:])
-            assert isinstance(bindings, Sequence)
-            new_private_env = LispEnv({}, private_env)
-            while bindings:
-                name = bindings[0]
-                expr = bindings[1]
-                new_private_env[name] = lisp_eval(expr, env, new_private_env)
-                bindings = bindings[2:]
-            return lisp_eval(body, env, new_private_env)
-        elif f == 'binding*':
-            bindings = r[0]
-            body = SExpr(r[1:])
-            assert isinstance(bindings, Sequence)
-            new_bindings = {}
-            while bindings:
-                name = bindings[0]
-                assert type(name) is Symbol, name
-                expr = bindings[1]
-                new_bindings[name] = lisp_eval(expr, env, private_env)
-                bindings = bindings[2:]
-            new_env = env.new_scope(new_bindings)
-            try:
-                env.push(new_env)
-                return lisp_eval(body, env, private_env)
-            finally:
-                env.pop()
-        elif f == '.':
-            if len(r) == 2:
-                # get
-                obj = lisp_eval(r[0], env, private_env)
-                attr = lisp_eval(r[1], env, private_env)
-                return getattr(obj, attr)
-            else:
-                obj = lisp_eval(r[0], env, private_env)
-                attr = lisp_eval(r[1], env, private_env)
-                value = lisp_eval(r[2], env, private_env)
-                return setattr(obj, attr, value)
-        elif f == '.?':
-            return hasattr(*r)
+        sf_func = _sf_dict.get(f)
+        if sf_func is not None:
+            return sf_func(r, env, private_env)
         else:
             # If not a special form, then treat this as a function.
             # Evaluate the first form and keep it as the function object.
@@ -805,6 +824,20 @@ def lisp_eval__(expr, env=None, private_env=None):
             else:
                 ret = lisp_apply(func, args, env)
                 return lisp_eval(ret, env, private_env)
+    elif type_e is QuoteWrapper:
+        def unquote(qexpr):
+            t = type(qexpr)
+            if t is SExpr:
+                expr_out = []
+                # recursive descent
+                for e in qexpr:
+                    expr_out.append(unquote(e))
+                return SExpr(expr_out)
+            elif t is UnquoteWrapper:
+                return lisp_eval(qexpr.content, env, private_env)
+            else:
+                return qexpr
+        return unquote(expr.content)
     elif type_e in _passthrough_expr_types: return expr
     elif callable(expr):
         return expr

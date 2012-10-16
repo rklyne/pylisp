@@ -1,6 +1,11 @@
 import unittest
 import lisp
 
+if isinstance(__builtins__, dict):
+    builtin_dict = __builtins__
+else:
+    builtin_dict = __builtins__.__dict__
+
 class LispTest(unittest.TestCase):
     def setUp(self):
         "Prepare a StringReader to read in s-expressions during tests."
@@ -259,7 +264,7 @@ class EnvTest(LispTest):
 
     def test_builtin_env(self):
         env = lisp.get_basic_env()
-        for key in __builtins__.__dict__:
+        for key in builtin_dict:
             self.assert_(env.has_key(key))
 
     def test_simple_env(self):
@@ -401,6 +406,10 @@ class IntegrationTest(unittest.TestCase):
         assert fn(True) == yes_val
         assert fn(False) == no_val
 
+def main():
+    pgm = unittest.TestProgram(__name__)
+    pgm.runTests()
+
 if __name__ == '__main__':
-    unittest.main()
+    main()
 
